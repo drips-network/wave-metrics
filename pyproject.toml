@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.20.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wave-metrics"
+version = "0.1.0"
+description = "Metrics service for Drips Wave using GitHub API and GitHub Archive data sources"
+requires-python = ">=3.11,<3.13"
+authors = [
+  { name = "Warren Winter" }
+]
+license = "MIT"
+license-files = ["LICENSE"]
+
+dependencies = [
+  "fastapi>=0.115,<0.116",
+  "uvicorn[standard]>=0.30,<0.31",
+  "SQLAlchemy>=2.0.31,<3",
+  "psycopg2-binary>=2.9.9,<3",
+  "redis>=5.0.7,<6",
+  "celery>=5.4,<6",
+  "httpx>=0.27,<0.28",
+  "python-dotenv>=1.0.1,<2",
+  "pydantic>=2.7,<3",
+  "cryptography>=43.0,<44",
+  "alembic>=1.13,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2,<9",
+  "fakeredis>=2.23,<3",
+  "mypy>=1.10,<2",
+]
+
+[tool.hatch.build]
+include = [
+  "services/**",
+  "scripts/**",
+  "population_data/**",
+  "README.md",
+]
+exclude = [
+  ".env",
+  "tests/**",
+  "**/__pycache__/**",
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+pretty = true
+files = [
+  "services/shared"
+]
+
+[tool.pytest.ini_options]
+markers = [
+  "e2e: real end-to-end tests against a running stack and GitHub API"
+]

@@ -1,0 +1,852 @@
+-- -- =============================================================================
+-- -- BigQuery Pipeline for Population-Level Metrics
+-- -- =============================================================================
+-- --
+-- -- Usage:
+-- -- 1. Edit the parameters in §1 below
+-- -- 2. Execute the entire script
+-- --
+-- -- For (hypothetical*) incremental refreshes, set date range to a single month.
+-- -- The script handles year-spanning date ranges automatically via FOR loops.
+-- -- * Refreshing is only hypothetically suggested due to the breaking change in
+-- --   the `payload` structure from October 2025 onwards (see ./README.md).
+-- --
+-- -- =============================================================================
+
+-- -- =============================================================================
+-- -- §1: Config parameters (edit these)
+-- -- =============================================================================
+
+DECLARE p_baseline_start_date DATE DEFAULT DATE '2022-10-01';
+DECLARE p_baseline_end_date DATE DEFAULT DATE '2025-09-30';
+DECLARE p_baseline_id STRING DEFAULT '2025-09-30_v1';
+DECLARE p_gcs_export_bucket STRING DEFAULT 'gs://your-bucket/wave-metrics';
+
+-- -- =============================================================================
+-- -- §2: Derived parameters (don't edit)
+-- -- =============================================================================
+
+DECLARE p_baseline_start_ts TIMESTAMP DEFAULT TIMESTAMP(p_baseline_start_date);
+DECLARE p_baseline_end_ts TIMESTAMP DEFAULT TIMESTAMP(DATE_ADD(p_baseline_end_date, INTERVAL 1 DAY));
+DECLARE p_start_year INT64 DEFAULT EXTRACT(YEAR FROM p_baseline_start_date);
+DECLARE p_end_year INT64 DEFAULT EXTRACT(YEAR FROM p_baseline_end_date);
+
+-- Working variables for loops
+DECLARE v_year INT64;
+DECLARE v_suffix_start STRING;
+DECLARE v_suffix_end STRING;
+DECLARE v_table_pattern STRING;
+
+
+-- =============================================================================
+-- §3: Create tables
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS `github_population_metrics.raw_extracted_events` (
+  month DATE NOT NULL,
+  event_type STRING NOT NULL,
+  event_actor_login STRING NOT NULL,
+  repo_id INT64,
+  repo_name STRING,
+  created_at TIMESTAMP NOT NULL,
+  action STRING,
+  issue_pr_number INT64,
+  issue_pr_author_login STRING,
+  issue_pr_created_at TIMESTAMP,
+  issue_pr_closed_at TIMESTAMP,
+  issue_pr_merged_at TIMESTAMP,
+  issue_pr_draft BOOL,
+  review_pr_number INT64,
+  review_pr_author_login STRING,
+  review_pr_created_at TIMESTAMP,
+  review_pr_closed_at TIMESTAMP,
+  review_pr_merged_at TIMESTAMP,
+  review_pr_draft BOOL,
+  pr_event_number INT64,
+  pr_merged_flag BOOL,
+  pr_merged_at TIMESTAMP
+)
+PARTITION BY month
+CLUSTER BY event_type, repo_id, event_actor_login
+OPTIONS(require_partition_filter = true);
+
+CREATE TABLE IF NOT EXISTS `github_population_metrics.stg_oss_event_counts_monthly` (
+  month DATE NOT NULL,
+  login STRING NOT NULL,
+  event_type STRING NOT NULL,
+  n_events INT64 NOT NULL
+)
+PARTITION BY month
+CLUSTER BY login, event_type
+OPTIONS(require_partition_filter = true);
+
+CREATE TABLE IF NOT EXISTS `github_population_metrics.stg_pr_comment_snapshots_monthly` (
+  month DATE NOT NULL,
+  repo_id INT64,
+  repo_name STRING,
+  pr_number INT64 NOT NULL,
+  pr_author_login STRING NOT NULL,
+  pr_created_at TIMESTAMP,
+  pr_closed_at TIMESTAMP,
+  pr_merged_at TIMESTAMP,
+  snapshot_ever_merged BOOL,
+  snapshot_ever_closed BOOL,
+  snapshot_ever_draft BOOL
+)
+PARTITION BY month
+CLUSTER BY repo_id, pr_number
+OPTIONS(require_partition_filter = true);
+
+CREATE TABLE IF NOT EXISTS `github_population_metrics.stg_pr_review_snapshots_monthly` (
+  month DATE NOT NULL,
+  repo_id INT64,
+  repo_name STRING,
+  pr_number INT64 NOT NULL,
+  pr_author_login STRING NOT NULL,
+  pr_created_at TIMESTAMP,
+  pr_closed_at TIMESTAMP,
+  pr_merged_at TIMESTAMP,
+  snapshot_ever_merged BOOL,
+  snapshot_ever_closed BOOL,
+  snapshot_ever_draft BOOL
+)
+PARTITION BY month
+CLUSTER BY repo_id, pr_number
+OPTIONS(require_partition_filter = true);
+
+CREATE TABLE IF NOT EXISTS `github_population_metrics.stg_pr_terminal_events` (
+  month DATE NOT NULL,
+  repo_id INT64,
+  pr_number INT64 NOT NULL,
+  action STRING NOT NULL,
+  event_ts TIMESTAMP NOT NULL,
+  is_merge_event BOOL NOT NULL,
+  payload_merged_at TIMESTAMP
+)
+PARTITION BY month
+CLUSTER BY repo_id, pr_number
+OPTIONS(require_partition_filter = true);
+
+CREATE TABLE IF NOT EXISTS `github_population_metrics.pr_agg` (
+  repo_id INT64,
+  repo_name STRING,
+  pr_number INT64 NOT NULL,
+  pr_author_login STRING NOT NULL,
+  created_at TIMESTAMP,
+  closed_at TIMESTAMP,
+  merged_at TIMESTAMP,
+  ever_merged BOOL,
+  is_closed_final_unmerged BOOL,
+  ever_draft BOOL,
+  source_event_types STRING,
+  baseline_id STRING NOT NULL
+)
+PARTITION BY DATE(created_at)
+CLUSTER BY baseline_id, pr_author_login
+OPTIONS(require_partition_filter = true);
+
+CREATE TABLE IF NOT EXISTS `github_population_metrics.user_metrics_baseline` (
+  login STRING NOT NULL,
+  total_opened_prs INT64,
+  total_merged_prs INT64,
+  closed_without_merge_prs INT64,
+  pr_merge_rate FLOAT64,
+  pr_drop_rate FLOAT64,
+  avg_merge_latency_hours FLOAT64,
+  oss_pushes INT64,
+  oss_prs_opened INT64,
+  oss_reviews INT64,
+  oss_issues_opened INT64,
+  baseline_id STRING NOT NULL
+)
+CLUSTER BY baseline_id, login;
+
+CREATE TABLE IF NOT EXISTS `github_population_metrics.population_cdfs` (
+  metric_name STRING NOT NULL,
+  percentile FLOAT64 NOT NULL,
+  threshold_value FLOAT64 NOT NULL,
+  baseline_id STRING NOT NULL,
+  baseline_start_date DATE NOT NULL,
+  baseline_end_date DATE NOT NULL,
+  computed_at TIMESTAMP NOT NULL
+)
+CLUSTER BY metric_name, baseline_id;
+
+CREATE TABLE IF NOT EXISTS `github_population_metrics.baseline_metadata` (
+  baseline_id STRING NOT NULL,
+  baseline_start_date DATE NOT NULL,
+  baseline_end_date DATE NOT NULL,
+  computed_at TIMESTAMP NOT NULL,
+  pr_definition STRING NOT NULL,
+  population_count INT64,
+  notes STRING
+);
+
+-- =============================================================================
+-- §4.1: PushEvent counts
+-- =============================================================================
+
+-- Clear existing PushEvent data for the date range
+DELETE FROM `github_population_metrics.stg_oss_event_counts_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'PushEvent';
+
+-- Loop over years and insert PushEvent counts
+SET v_year = p_start_year;
+WHILE v_year <= p_end_year DO
+
+  -- Determine table pattern and suffix range for this year
+  IF v_year = p_start_year AND v_year = p_end_year THEN
+    -- Single-year range: use day tables with exact boundaries
+    SET v_table_pattern = CONCAT('githubarchive.day.', CAST(v_year AS STRING), '*');
+    SET v_suffix_start = FORMAT_DATE('%m%d', p_baseline_start_date);
+    SET v_suffix_end = FORMAT_DATE('%m%d', p_baseline_end_date);
+  ELSEIF v_year = p_start_year THEN
+    -- First year of multi-year range
+    SET v_table_pattern = CONCAT('githubarchive.day.', CAST(v_year AS STRING), '*');
+    SET v_suffix_start = FORMAT_DATE('%m%d', p_baseline_start_date);
+    SET v_suffix_end = '1231';
+  ELSEIF v_year = p_end_year THEN
+    -- Last year of multi-year range
+    SET v_table_pattern = CONCAT('githubarchive.day.', CAST(v_year AS STRING), '*');
+    SET v_suffix_start = '0101';
+    SET v_suffix_end = FORMAT_DATE('%m%d', p_baseline_end_date);
+  ELSE
+    -- Middle year: use month tables for efficiency
+    SET v_table_pattern = CONCAT('githubarchive.month.', CAST(v_year AS STRING), '*');
+    SET v_suffix_start = '01';
+    SET v_suffix_end = '12';
+  END IF;
+
+  EXECUTE IMMEDIATE FORMAT("""
+    INSERT INTO `github_population_metrics.stg_oss_event_counts_monthly`
+      (month, login, event_type, n_events)
+    SELECT
+      DATE_TRUNC(DATE(created_at), MONTH) AS month,
+      actor.login AS login,
+      'PushEvent' AS event_type,
+      COUNT(*) AS n_events
+    FROM `%s`
+    WHERE _TABLE_SUFFIX BETWEEN @suffix_start AND @suffix_end
+      AND type = 'PushEvent'
+      AND public = TRUE
+      AND actor.login IS NOT NULL
+      AND NOT ENDS_WITH(actor.login, '[bot]')
+      AND DATE(created_at) BETWEEN @start_date AND @end_date
+    GROUP BY 1, 2
+  """, v_table_pattern)
+  USING
+    v_suffix_start AS suffix_start,
+    v_suffix_end AS suffix_end,
+    p_baseline_start_date AS start_date,
+    p_baseline_end_date AS end_date;
+
+  SET v_year = v_year + 1;
+END WHILE;
+
+-- =============================================================================
+-- §4.2: Payload extraction
+-- =============================================================================
+
+-- Clear existing data for the date range
+DELETE FROM `github_population_metrics.raw_extracted_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date;
+
+-- Loop over years and insert payload-extracted events
+SET v_year = p_start_year;
+WHILE v_year <= p_end_year DO
+
+  -- Determine table pattern and suffix range (same logic as Query A)
+  IF v_year = p_start_year AND v_year = p_end_year THEN
+    SET v_table_pattern = CONCAT('githubarchive.day.', CAST(v_year AS STRING), '*');
+    SET v_suffix_start = FORMAT_DATE('%m%d', p_baseline_start_date);
+    SET v_suffix_end = FORMAT_DATE('%m%d', p_baseline_end_date);
+  ELSEIF v_year = p_start_year THEN
+    SET v_table_pattern = CONCAT('githubarchive.day.', CAST(v_year AS STRING), '*');
+    SET v_suffix_start = FORMAT_DATE('%m%d', p_baseline_start_date);
+    SET v_suffix_end = '1231';
+  ELSEIF v_year = p_end_year THEN
+    SET v_table_pattern = CONCAT('githubarchive.day.', CAST(v_year AS STRING), '*');
+    SET v_suffix_start = '0101';
+    SET v_suffix_end = FORMAT_DATE('%m%d', p_baseline_end_date);
+  ELSE
+    SET v_table_pattern = CONCAT('githubarchive.month.', CAST(v_year AS STRING), '*');
+    SET v_suffix_start = '01';
+    SET v_suffix_end = '12';
+  END IF;
+
+  EXECUTE IMMEDIATE FORMAT("""
+    INSERT INTO `github_population_metrics.raw_extracted_events`
+      (month, event_type, event_actor_login, repo_id, repo_name, created_at,
+       action,
+       issue_pr_number, issue_pr_author_login, issue_pr_created_at,
+       issue_pr_closed_at, issue_pr_merged_at, issue_pr_draft,
+       review_pr_number, review_pr_author_login, review_pr_created_at,
+       review_pr_closed_at, review_pr_merged_at, review_pr_draft,
+       pr_event_number, pr_merged_flag, pr_merged_at)
+    SELECT
+      DATE_TRUNC(DATE(created_at), MONTH) AS month,
+      type AS event_type,
+      actor.login AS event_actor_login,
+      repo.id AS repo_id,
+      repo.name AS repo_name,
+      created_at,
+      JSON_VALUE(payload, '$.action') AS action,
+      SAFE_CAST(JSON_VALUE(payload, '$.issue.number') AS INT64) AS issue_pr_number,
+      JSON_VALUE(payload, '$.issue.user.login') AS issue_pr_author_login,
+      SAFE.PARSE_TIMESTAMP('%%Y-%%m-%%dT%%H:%%M:%%E*SZ',
+        JSON_VALUE(payload, '$.issue.created_at')) AS issue_pr_created_at,
+      SAFE.PARSE_TIMESTAMP('%%Y-%%m-%%dT%%H:%%M:%%E*SZ',
+        JSON_VALUE(payload, '$.issue.closed_at')) AS issue_pr_closed_at,
+      SAFE.PARSE_TIMESTAMP('%%Y-%%m-%%dT%%H:%%M:%%E*SZ',
+        JSON_VALUE(payload, '$.issue.pull_request.merged_at')) AS issue_pr_merged_at,
+      SAFE_CAST(JSON_VALUE(payload, '$.issue.draft') AS BOOL) AS issue_pr_draft,
+      SAFE_CAST(JSON_VALUE(payload, '$.pull_request.number') AS INT64) AS review_pr_number,
+      JSON_VALUE(payload, '$.pull_request.user.login') AS review_pr_author_login,
+      SAFE.PARSE_TIMESTAMP('%%Y-%%m-%%dT%%H:%%M:%%E*SZ',
+        JSON_VALUE(payload, '$.pull_request.created_at')) AS review_pr_created_at,
+      SAFE.PARSE_TIMESTAMP('%%Y-%%m-%%dT%%H:%%M:%%E*SZ',
+        JSON_VALUE(payload, '$.pull_request.closed_at')) AS review_pr_closed_at,
+      SAFE.PARSE_TIMESTAMP('%%Y-%%m-%%dT%%H:%%M:%%E*SZ',
+        JSON_VALUE(payload, '$.pull_request.merged_at')) AS review_pr_merged_at,
+      SAFE_CAST(JSON_VALUE(payload, '$.pull_request.draft') AS BOOL) AS review_pr_draft,
+      SAFE_CAST(COALESCE(
+        JSON_VALUE(payload, '$.number'),
+        JSON_VALUE(payload, '$.pull_request.number')
+      ) AS INT64) AS pr_event_number,
+      SAFE_CAST(JSON_VALUE(payload, '$.pull_request.merged') AS BOOL) AS pr_merged_flag,
+      SAFE.PARSE_TIMESTAMP('%%Y-%%m-%%dT%%H:%%M:%%E*SZ',
+        JSON_VALUE(payload, '$.pull_request.merged_at')) AS pr_merged_at
+    FROM `%s`
+    WHERE _TABLE_SUFFIX BETWEEN @suffix_start AND @suffix_end
+      AND public = TRUE
+      AND actor.login IS NOT NULL
+      AND type IN ('PullRequestReviewEvent','IssuesEvent','IssueCommentEvent','PullRequestEvent')
+      AND DATE(created_at) BETWEEN @start_date AND @end_date
+      AND (
+        (type = 'PullRequestReviewEvent' AND JSON_VALUE(payload, '$.action') = 'created')
+        OR (type = 'IssuesEvent' AND JSON_VALUE(payload, '$.action') = 'opened')
+        OR (type = 'IssueCommentEvent' AND JSON_QUERY(payload, '$.issue.pull_request') IS NOT NULL)
+        OR (type = 'PullRequestEvent' AND JSON_VALUE(payload, '$.action') IN ('opened', 'reopened', 'closed', 'merged'))
+      )
+      AND (
+        CASE
+          WHEN type = 'PullRequestEvent' THEN TRUE
+          WHEN type = 'IssueCommentEvent' THEN NOT ENDS_WITH(IFNULL(JSON_VALUE(payload, '$.issue.user.login'), ''), '[bot]')
+          WHEN type = 'PullRequestReviewEvent' THEN NOT ENDS_WITH(IFNULL(JSON_VALUE(payload, '$.pull_request.user.login'), ''), '[bot]')
+          ELSE NOT ENDS_WITH(actor.login, '[bot]')
+        END
+      )
+  """, v_table_pattern)
+  USING
+    v_suffix_start AS suffix_start,
+    v_suffix_end AS suffix_end,
+    p_baseline_start_date AS start_date,
+    p_baseline_end_date AS end_date;
+
+  SET v_year = v_year + 1;
+END WHILE;
+
+-- =============================================================================
+-- §5: Populate staging tables from extracted events
+-- =============================================================================
+
+-- 5.1 OSS Event Counts (Reviews and Issues Only)
+DELETE FROM `github_population_metrics.stg_oss_event_counts_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type IN ('PullRequestReviewEvent', 'IssuesEvent');
+
+INSERT INTO `github_population_metrics.stg_oss_event_counts_monthly`
+  (month, login, event_type, n_events)
+SELECT
+  month,
+  event_actor_login AS login,
+  'PullRequestReviewEvent' AS event_type,
+  COUNT(*) AS n_events
+FROM `github_population_metrics.raw_extracted_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'PullRequestReviewEvent'
+  AND NOT ENDS_WITH(event_actor_login, '[bot]')
+GROUP BY 1, 2
+
+UNION ALL
+
+SELECT
+  month,
+  event_actor_login AS login,
+  'IssuesEvent' AS event_type,
+  COUNT(*) AS n_events
+FROM `github_population_metrics.raw_extracted_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'IssuesEvent'
+GROUP BY 1, 2;
+
+-- 5.2 PR Comment Snapshots
+DELETE FROM `github_population_metrics.stg_pr_comment_snapshots_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date;
+
+INSERT INTO `github_population_metrics.stg_pr_comment_snapshots_monthly`
+  (month, repo_id, repo_name, pr_number, pr_author_login,
+   pr_created_at, pr_closed_at, pr_merged_at,
+   snapshot_ever_merged, snapshot_ever_closed, snapshot_ever_draft)
+SELECT
+  month,
+  repo_id,
+  ANY_VALUE(repo_name) AS repo_name,
+  issue_pr_number AS pr_number,
+  issue_pr_author_login AS pr_author_login,
+  MIN(COALESCE(issue_pr_created_at, created_at)) AS pr_created_at,
+  MAX(issue_pr_closed_at) AS pr_closed_at,
+  MIN(issue_pr_merged_at) AS pr_merged_at,
+  LOGICAL_OR(issue_pr_merged_at IS NOT NULL) AS snapshot_ever_merged,
+  LOGICAL_OR(issue_pr_closed_at IS NOT NULL) AS snapshot_ever_closed,
+  LOGICAL_OR(IFNULL(issue_pr_draft, FALSE)) AS snapshot_ever_draft
+FROM `github_population_metrics.raw_extracted_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'IssueCommentEvent'
+  AND issue_pr_number IS NOT NULL
+  AND issue_pr_author_login IS NOT NULL
+GROUP BY month, repo_id, issue_pr_number, issue_pr_author_login;
+
+-- 5.3 PR Review Snapshots
+DELETE FROM `github_population_metrics.stg_pr_review_snapshots_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date;
+
+INSERT INTO `github_population_metrics.stg_pr_review_snapshots_monthly`
+  (month, repo_id, repo_name, pr_number, pr_author_login,
+   pr_created_at, pr_closed_at, pr_merged_at,
+   snapshot_ever_merged, snapshot_ever_closed, snapshot_ever_draft)
+SELECT
+  month,
+  repo_id,
+  ANY_VALUE(repo_name) AS repo_name,
+  review_pr_number AS pr_number,
+  review_pr_author_login AS pr_author_login,
+  MIN(COALESCE(review_pr_created_at, created_at)) AS pr_created_at,
+  MAX(review_pr_closed_at) AS pr_closed_at,
+  MIN(review_pr_merged_at) AS pr_merged_at,
+  LOGICAL_OR(review_pr_merged_at IS NOT NULL) AS snapshot_ever_merged,
+  LOGICAL_OR(review_pr_closed_at IS NOT NULL) AS snapshot_ever_closed,
+  LOGICAL_OR(IFNULL(review_pr_draft, FALSE)) AS snapshot_ever_draft
+FROM `github_population_metrics.raw_extracted_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'PullRequestReviewEvent'
+  AND review_pr_number IS NOT NULL
+  AND review_pr_author_login IS NOT NULL
+GROUP BY month, repo_id, review_pr_number, review_pr_author_login;
+
+-- 5.4 PR Terminal Events
+DELETE FROM `github_population_metrics.stg_pr_terminal_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date;
+
+INSERT INTO `github_population_metrics.stg_pr_terminal_events`
+  (month, repo_id, pr_number, action, event_ts, is_merge_event, payload_merged_at)
+SELECT
+  month,
+  repo_id,
+  pr_event_number AS pr_number,
+  action,
+  created_at AS event_ts,
+  IFNULL(
+    action = 'merged'
+    OR (action = 'closed' AND (pr_merged_flag = TRUE OR pr_merged_at IS NOT NULL)),
+    FALSE
+  ) AS is_merge_event,
+  pr_merged_at AS payload_merged_at
+FROM `github_population_metrics.raw_extracted_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'PullRequestEvent'
+  AND pr_event_number IS NOT NULL;
+
+-- =============================================================================
+-- §6: Aggregate PR metrics
+-- =============================================================================
+
+DELETE FROM `github_population_metrics.pr_agg`
+WHERE baseline_id = p_baseline_id
+  AND DATE(created_at) BETWEEN p_baseline_start_date AND p_baseline_end_date;
+
+INSERT INTO `github_population_metrics.pr_agg`
+  (repo_id, repo_name, pr_number, pr_author_login,
+   created_at, closed_at, merged_at,
+   ever_merged, is_closed_final_unmerged, ever_draft, source_event_types, baseline_id)
+
+WITH
+pr_from_comments AS (
+  SELECT
+    repo_id,
+    pr_number,
+    ANY_VALUE(repo_name) AS repo_name,
+    ANY_VALUE(pr_author_login) AS pr_author_login,
+    MIN(pr_created_at) AS created_at,
+    MAX(pr_closed_at) AS snapshot_closed_at,
+    MIN(pr_merged_at) AS snapshot_merged_at,
+    LOGICAL_OR(snapshot_ever_merged) AS snapshot_ever_merged,
+    LOGICAL_OR(snapshot_ever_closed) AS snapshot_ever_closed,
+    LOGICAL_OR(snapshot_ever_draft) AS ever_draft
+  FROM `github_population_metrics.stg_pr_comment_snapshots_monthly`
+  WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  GROUP BY repo_id, pr_number
+),
+
+pr_from_reviews AS (
+  SELECT
+    repo_id,
+    pr_number,
+    ANY_VALUE(repo_name) AS repo_name,
+    ANY_VALUE(pr_author_login) AS pr_author_login,
+    MIN(pr_created_at) AS created_at,
+    MAX(pr_closed_at) AS snapshot_closed_at,
+    MIN(pr_merged_at) AS snapshot_merged_at,
+    LOGICAL_OR(snapshot_ever_merged) AS snapshot_ever_merged,
+    LOGICAL_OR(snapshot_ever_closed) AS snapshot_ever_closed,
+    LOGICAL_OR(snapshot_ever_draft) AS ever_draft
+  FROM `github_population_metrics.stg_pr_review_snapshots_monthly`
+  WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  GROUP BY repo_id, pr_number
+),
+
+pr_universe AS (
+  SELECT
+    COALESCE(c.repo_id, r.repo_id) AS repo_id,
+    COALESCE(c.repo_name, r.repo_name) AS repo_name,
+    COALESCE(c.pr_number, r.pr_number) AS pr_number,
+    COALESCE(c.pr_author_login, r.pr_author_login) AS pr_author_login,
+    LEAST(
+      COALESCE(c.created_at, r.created_at),
+      COALESCE(r.created_at, c.created_at)
+    ) AS created_at,
+    GREATEST(
+      COALESCE(c.snapshot_closed_at, r.snapshot_closed_at),
+      COALESCE(r.snapshot_closed_at, c.snapshot_closed_at)
+    ) AS snapshot_closed_at,
+    LEAST(
+      COALESCE(c.snapshot_merged_at, r.snapshot_merged_at),
+      COALESCE(r.snapshot_merged_at, c.snapshot_merged_at)
+    ) AS snapshot_merged_at,
+    (IFNULL(c.snapshot_ever_merged, FALSE) OR IFNULL(r.snapshot_ever_merged, FALSE)) AS snapshot_ever_merged,
+    (IFNULL(c.snapshot_ever_closed, FALSE) OR IFNULL(r.snapshot_ever_closed, FALSE)) AS snapshot_ever_closed,
+    (IFNULL(c.ever_draft, FALSE) OR IFNULL(r.ever_draft, FALSE)) AS ever_draft,
+    CASE
+      WHEN c.repo_id IS NOT NULL AND r.repo_id IS NOT NULL THEN 'both'
+      WHEN c.repo_id IS NOT NULL THEN 'comment'
+      ELSE 'review'
+    END AS source_event_types
+  FROM pr_from_comments c
+  FULL OUTER JOIN pr_from_reviews r
+    ON c.repo_id = r.repo_id AND c.pr_number = r.pr_number
+),
+
+per_pr_terminal AS (
+  SELECT
+    repo_id,
+    pr_number,
+    MIN(IF(is_merge_event, COALESCE(payload_merged_at, event_ts), NULL)) AS terminal_merged_at,
+    MAX(IF(action = 'closed', event_ts, NULL)) AS terminal_closed_at,
+    LOGICAL_OR(is_merge_event) AS terminal_ever_merged,
+    (ARRAY_AGG(action ORDER BY event_ts DESC LIMIT 1))[OFFSET(0)] AS last_terminal_action
+  FROM `github_population_metrics.stg_pr_terminal_events`
+  WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  GROUP BY repo_id, pr_number
+)
+
+SELECT
+  p.repo_id,
+  p.repo_name,
+  p.pr_number,
+  p.pr_author_login,
+  p.created_at,
+  COALESCE(t.terminal_closed_at, p.snapshot_closed_at) AS closed_at,
+  COALESCE(t.terminal_merged_at, p.snapshot_merged_at) AS merged_at,
+  (IFNULL(t.terminal_ever_merged, FALSE) OR IFNULL(p.snapshot_ever_merged, FALSE)) AS ever_merged,
+  (
+    NOT (IFNULL(t.terminal_ever_merged, FALSE) OR IFNULL(p.snapshot_ever_merged, FALSE))
+    AND (
+      (t.last_terminal_action IS NOT NULL AND t.last_terminal_action = 'closed')
+      OR (t.last_terminal_action IS NULL AND p.snapshot_ever_closed)
+    )
+  ) AS is_closed_final_unmerged,
+  p.ever_draft,
+  p.source_event_types,
+  p_baseline_id AS baseline_id
+FROM pr_universe p
+LEFT JOIN per_pr_terminal t
+  ON p.repo_id = t.repo_id AND p.pr_number = t.pr_number
+WHERE p.created_at >= p_baseline_start_ts
+  AND p.created_at < p_baseline_end_ts;
+
+-- =============================================================================
+-- §7: User metrics baseline
+-- =============================================================================
+
+DELETE FROM `github_population_metrics.user_metrics_baseline`
+WHERE baseline_id = p_baseline_id;
+
+INSERT INTO `github_population_metrics.user_metrics_baseline`
+  (login, total_opened_prs, total_merged_prs, closed_without_merge_prs,
+   pr_merge_rate, pr_drop_rate, avg_merge_latency_hours,
+   oss_pushes, oss_prs_opened, oss_reviews, oss_issues_opened, baseline_id)
+
+WITH
+pr_metrics AS (
+  SELECT
+    pr_author_login AS login,
+    COUNT(*) AS total_opened_prs,
+    COUNTIF(ever_merged) AS total_merged_prs,
+    COUNTIF(is_closed_final_unmerged AND NOT ever_draft) AS closed_without_merge_prs,
+    AVG(
+      IF(
+        ever_merged AND merged_at IS NOT NULL AND merged_at >= created_at,
+        TIMESTAMP_DIFF(merged_at, created_at, HOUR),
+        NULL
+      )
+    ) AS avg_merge_latency_hours
+  FROM `github_population_metrics.pr_agg`
+  WHERE baseline_id = p_baseline_id
+    AND DATE(created_at) BETWEEN p_baseline_start_date AND p_baseline_end_date
+  GROUP BY pr_author_login
+),
+
+oss_metrics AS (
+  SELECT
+    login,
+    SUM(IF(event_type = 'PushEvent', n_events, 0)) AS oss_pushes,
+    SUM(IF(event_type = 'PullRequestReviewEvent', n_events, 0)) AS oss_reviews,
+    SUM(IF(event_type = 'IssuesEvent', n_events, 0)) AS oss_issues_opened
+  FROM `github_population_metrics.stg_oss_event_counts_monthly`
+  WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  GROUP BY login
+)
+
+SELECT
+  COALESCE(p.login, o.login) AS login,
+  IFNULL(p.total_opened_prs, 0) AS total_opened_prs,
+  IFNULL(p.total_merged_prs, 0) AS total_merged_prs,
+  IFNULL(p.closed_without_merge_prs, 0) AS closed_without_merge_prs,
+  SAFE_DIVIDE(p.total_merged_prs, p.total_opened_prs) AS pr_merge_rate,
+  SAFE_DIVIDE(p.closed_without_merge_prs, p.total_opened_prs) AS pr_drop_rate,
+  p.avg_merge_latency_hours,
+  IFNULL(o.oss_pushes, 0) AS oss_pushes,
+  IFNULL(p.total_opened_prs, 0) AS oss_prs_opened,
+  IFNULL(o.oss_reviews, 0) AS oss_reviews,
+  IFNULL(o.oss_issues_opened, 0) AS oss_issues_opened,
+  p_baseline_id AS baseline_id
+FROM pr_metrics p
+FULL OUTER JOIN oss_metrics o ON p.login = o.login;
+
+-- =============================================================================
+-- §8: CDF table
+-- =============================================================================
+
+DELETE FROM `github_population_metrics.population_cdfs`
+WHERE baseline_id = p_baseline_id;
+
+-- CDF 1: total_opened_prs
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH q AS (
+  SELECT APPROX_QUANTILES(total_opened_prs, 1000) AS arr
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_opened_prs >= 1  -- FILTER: only PR-active users
+)
+SELECT 'total_opened_prs', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- CDF 2: total_merged_prs
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH q AS (
+  SELECT APPROX_QUANTILES(total_merged_prs, 1000) AS arr
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_opened_prs >= 1  -- FILTER: only PR-active users
+)
+SELECT 'total_merged_prs', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- CDF 3: pr_merge_rate
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH q AS (
+  SELECT APPROX_QUANTILES(pr_merge_rate, 1000) AS arr
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_opened_prs >= 1  -- FILTER: only PR-active users
+)
+SELECT 'pr_merge_rate', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- CDF 4: pr_drop_rate
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH q AS (
+  SELECT APPROX_QUANTILES(pr_drop_rate, 1000) AS arr
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_opened_prs >= 1  -- FILTER: only PR-active users
+)
+SELECT 'pr_drop_rate', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- CDF 5: avg_merge_latency_hours
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH q AS (
+  SELECT APPROX_QUANTILES(avg_merge_latency_hours, 1000) AS arr
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_merged_prs >= 1  -- FILTER: only users with merged PRs
+    AND avg_merge_latency_hours IS NOT NULL
+)
+SELECT 'avg_merge_latency_hours', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- CDF 6: oss_pushes
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH q AS (
+  SELECT APPROX_QUANTILES(oss_pushes, 1000) AS arr
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_opened_prs >= 1  -- FILTER: only PR-active users
+)
+SELECT 'oss_pushes', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- CDF 7: oss_prs_opened
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH q AS (
+  SELECT APPROX_QUANTILES(oss_prs_opened, 1000) AS arr
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_opened_prs >= 1  -- FILTER: only PR-active users
+)
+SELECT 'oss_prs_opened', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- CDF 8: oss_reviews
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH q AS (
+  SELECT APPROX_QUANTILES(oss_reviews, 1000) AS arr
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_opened_prs >= 1  -- FILTER: only PR-active users
+)
+SELECT 'oss_reviews', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- CDF 9: oss_issues_opened
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH q AS (
+  SELECT APPROX_QUANTILES(oss_issues_opened, 1000) AS arr
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_opened_prs >= 1  -- FILTER: only PR-active users
+)
+SELECT 'oss_issues_opened', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- CDF 10: oss_composite (3-component definition)
+CREATE TEMP FUNCTION pct_from_thresholds(val FLOAT64, thresholds ARRAY<FLOAT64>) AS (
+  CAST(LEAST(1000, GREATEST(0, RANGE_BUCKET(val, thresholds) - 1)) AS FLOAT64) / 10.0
+);
+
+INSERT INTO `github_population_metrics.population_cdfs`
+  (metric_name, percentile, threshold_value, baseline_id, baseline_start_date, baseline_end_date, computed_at)
+WITH
+base AS (
+  SELECT login,
+    CAST(oss_prs_opened AS FLOAT64) AS oss_prs_opened,
+    CAST(oss_reviews AS FLOAT64) AS oss_reviews,
+    CAST(oss_issues_opened AS FLOAT64) AS oss_issues_opened,
+    CAST(oss_pushes AS FLOAT64) AS oss_pushes  -- In case we evolve the OSS composite to include pushes
+  FROM `github_population_metrics.user_metrics_baseline`
+  WHERE baseline_id = p_baseline_id
+    AND total_opened_prs >= 1  -- FILTER: only PR-active users
+),
+thresholds AS (
+  SELECT
+    APPROX_QUANTILES(oss_prs_opened, 1000) AS t_prs,
+    APPROX_QUANTILES(oss_reviews, 1000) AS t_reviews,
+    APPROX_QUANTILES(oss_issues_opened, 1000) AS t_issues,
+    APPROX_QUANTILES(oss_pushes, 1000) AS t_pushes
+  FROM base
+),
+scored AS (
+  SELECT b.login,
+    pct_from_thresholds(b.oss_prs_opened, t.t_prs) AS p_prs,
+    pct_from_thresholds(b.oss_reviews, t.t_reviews) AS p_reviews,
+    pct_from_thresholds(b.oss_issues_opened, t.t_issues) AS p_issues,
+    pct_from_thresholds(b.oss_pushes, t.t_pushes) AS p_pushes
+  FROM base b CROSS JOIN thresholds t
+),
+composite AS (
+  SELECT
+    login,
+    -- v1 formula (3-component, no pushes):
+    0.40 * p_reviews + 0.35 * p_prs + 0.25 * p_issues AS composite_raw
+    -- potential future option (4-component with pushes):
+    -- 0.35 * p_reviews + 0.25 * p_prs + 0.20 * p_pushes + 0.20 * p_issues AS composite_raw
+  FROM scored
+),
+q AS (
+  SELECT APPROX_QUANTILES(composite_raw, 1000) AS arr FROM composite
+)
+SELECT 'oss_composite', i / 10.0, arr[OFFSET(i)], p_baseline_id, p_baseline_start_date, p_baseline_end_date, CURRENT_TIMESTAMP()
+FROM q, UNNEST(GENERATE_ARRAY(0, 1000)) AS i;
+
+-- =============================================================================
+-- §9: Baseline metadata
+-- =============================================================================
+
+INSERT INTO `github_population_metrics.baseline_metadata`
+  (baseline_id, baseline_start_date, baseline_end_date, computed_at, pr_definition, population_count, notes)
+SELECT
+  p_baseline_id,
+  p_baseline_start_date,
+  p_baseline_end_date,
+  CURRENT_TIMESTAMP(),
+  'commented_or_reviewed',
+  COUNT(DISTINCT login),
+  CONCAT(
+    'Baseline: ', CAST(p_baseline_start_date AS STRING), ' to ', CAST(p_baseline_end_date AS STRING), '. ',
+    'PR population: IssueCommentEvent OR PullRequestReviewEvent. ',
+    'PR deduplication: on (repo_id, pr_number) only. ',
+    'Bot filtering: excluded from contributor streams, kept for PR terminal events. ',
+    'All CDFs filtered to PR-active users (total_opened_prs >= 1). ',
+    'avg_merge_latency_hours additionally requires total_merged_prs >= 1. ',
+    'v1 composite: 0.40*reviews + 0.35*prs + 0.25*issues.'
+  )
+FROM `github_population_metrics.user_metrics_baseline`
+WHERE baseline_id = p_baseline_id;
+
+
+-- =============================================================================
+-- §10: Export CDF table to GCS (manually)
+-- =============================================================================
+
+-- Uncomment to export:
+/*
+EXECUTE IMMEDIATE FORMAT("""
+  EXPORT DATA OPTIONS(
+    uri = '%s/population_cdfs_%s_*.csv',
+    format = 'CSV',
+    overwrite = true,
+    header = true
+  ) AS
+  SELECT metric_name, percentile, threshold_value, baseline_start_date, baseline_end_date
+  FROM `github_population_metrics.population_cdfs`
+  WHERE baseline_id = @bid
+  ORDER BY metric_name, percentile
+""", p_gcs_export_bucket, p_baseline_id)
+USING p_baseline_id AS bid;
+*/
+
+
+-- =============================================================================
+-- End of script
+-- =============================================================================

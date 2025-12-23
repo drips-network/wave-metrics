@@ -1,0 +1,324 @@
+-- -- =============================================================================
+-- -- Validation Queries for Population-Level Metrics BQ Pipeline
+-- -- =============================================================================
+-- --
+-- -- Usage:
+-- -- 1. Edit the parameters in §1 below
+-- -- 2. Run each query using Section 1's declared parameters
+-- --
+-- -- =============================================================================
+
+-- -- =============================================================================
+-- -- §1: Config parameters (edit these)
+-- -- =============================================================================
+
+DECLARE p_baseline_start_date DATE DEFAULT DATE '2022-10-01';
+DECLARE p_baseline_end_date DATE DEFAULT DATE '2025-09-30';
+DECLARE p_baseline_id STRING DEFAULT '2025-09-30_v1';
+DECLARE p_gcs_export_bucket STRING DEFAULT 'gs://your-bucket/wave-metrics';
+
+-- -- =============================================================================
+-- -- §2: Derived parameters (don't edit)
+-- -- =============================================================================
+
+DECLARE p_baseline_start_ts TIMESTAMP DEFAULT TIMESTAMP(p_baseline_start_date);
+DECLARE p_baseline_end_ts TIMESTAMP DEFAULT TIMESTAMP(DATE_ADD(p_baseline_end_date, INTERVAL 1 DAY));
+DECLARE p_start_year INT64 DEFAULT EXTRACT(YEAR FROM p_baseline_start_date);
+DECLARE p_end_year INT64 DEFAULT EXTRACT(YEAR FROM p_baseline_end_date);
+
+-- Working variables for loops
+DECLARE v_year INT64;
+DECLARE v_suffix_start STRING;
+DECLARE v_suffix_end STRING;
+DECLARE v_table_pattern STRING;
+
+
+-- =============================================================================
+-- §3: Validation queries
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 3.1 Invariant Checks (all should return 0 violations)
+-- -----------------------------------------------------------------------------
+SELECT 'merged > opened' AS check_name, COUNT(*) AS violations
+FROM `github_population_metrics.user_metrics_baseline`
+WHERE baseline_id = p_baseline_id AND total_merged_prs > total_opened_prs
+
+UNION ALL
+SELECT 'dropped > opened', COUNT(*)
+FROM `github_population_metrics.user_metrics_baseline`
+WHERE baseline_id = p_baseline_id AND closed_without_merge_prs > total_opened_prs
+
+UNION ALL
+SELECT 'merged+dropped > opened', COUNT(*)
+FROM `github_population_metrics.user_metrics_baseline`
+WHERE baseline_id = p_baseline_id AND (total_merged_prs + closed_without_merge_prs) > total_opened_prs
+
+UNION ALL
+SELECT 'rates out of [0,1]', COUNT(*)
+FROM `github_population_metrics.user_metrics_baseline`
+WHERE baseline_id = p_baseline_id
+  AND (pr_merge_rate < 0 OR pr_merge_rate > 1 OR pr_drop_rate < 0 OR pr_drop_rate > 1)
+
+UNION ALL
+SELECT 'negative latency', COUNT(*)
+FROM `github_population_metrics.user_metrics_baseline`
+WHERE baseline_id = p_baseline_id AND avg_merge_latency_hours < 0;
+
+-- -----------------------------------------------------------------------------
+-- 3.2 Terminal state logic validation
+-- -----------------------------------------------------------------------------
+-- No PR should be both merged AND marked as closed_final_unmerged (expect 0)
+SELECT 'merged AND dropped (should be 0)' AS check_name, COUNT(*) AS violations
+FROM `github_population_metrics.pr_agg`
+WHERE baseline_id = p_baseline_id
+  AND DATE(created_at) BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND ever_merged = TRUE
+  AND is_closed_final_unmerged = TRUE;
+
+-- Distribution of PR outcomes
+SELECT
+  COUNTIF(ever_merged) AS merged,
+  COUNTIF(is_closed_final_unmerged) AS dropped,
+  COUNTIF(NOT ever_merged AND NOT is_closed_final_unmerged) AS still_open_or_unknown,
+  COUNT(*) AS total,
+  ROUND(SAFE_DIVIDE(COUNTIF(ever_merged) * 100.0, COUNT(*)), 2) AS pct_merged,
+  ROUND(SAFE_DIVIDE(COUNTIF(is_closed_final_unmerged) * 100.0, COUNT(*)), 2) AS pct_dropped,
+  ROUND(SAFE_DIVIDE(COUNTIF(NOT ever_merged AND NOT is_closed_final_unmerged) * 100.0, COUNT(*)), 2) AS pct_open
+FROM `github_population_metrics.pr_agg`
+WHERE baseline_id = p_baseline_id
+  AND DATE(created_at) BETWEEN p_baseline_start_date AND p_baseline_end_date;
+
+-- -----------------------------------------------------------------------------
+-- 3.3 PR source distribution validation
+-- -----------------------------------------------------------------------------
+-- Distribution of PR sources (comment vs review vs both)
+SELECT
+  source_event_types,
+  COUNT(*) AS pr_count,
+  ROUND(SAFE_DIVIDE(COUNT(*) * 100.0, SUM(COUNT(*)) OVER ()), 2) AS pct
+FROM `github_population_metrics.pr_agg`
+WHERE baseline_id = p_baseline_id
+  AND DATE(created_at) BETWEEN p_baseline_start_date AND p_baseline_end_date
+GROUP BY source_event_types
+ORDER BY pr_count DESC;
+
+-- No duplicate PRs after deduplication (expect 0)
+SELECT 'duplicate PRs (should be 0)' AS check_name, COUNT(*) AS violations
+FROM (
+  SELECT repo_id, pr_number, COUNT(*) AS cnt
+  FROM `github_population_metrics.pr_agg`
+  WHERE baseline_id = p_baseline_id
+    AND DATE(created_at) BETWEEN p_baseline_start_date AND p_baseline_end_date
+  GROUP BY repo_id, pr_number
+  HAVING cnt > 1
+);
+
+-- -----------------------------------------------------------------------------
+-- 3.4 Bot-filtering validation
+-- -----------------------------------------------------------------------------
+-- All should be 0 except bot_pr_terminal_events (bots can merge/close PRs)
+SELECT 'bot PR authors (should be 0)' AS check_name, COUNT(*) AS count
+FROM `github_population_metrics.pr_agg`
+WHERE baseline_id = p_baseline_id
+  AND DATE(created_at) BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND ENDS_WITH(pr_author_login, '[bot]')
+
+UNION ALL
+SELECT 'bot pushers (should be 0)', COUNT(*)
+FROM `github_population_metrics.stg_oss_event_counts_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'PushEvent'
+  AND ENDS_WITH(login, '[bot]')
+
+UNION ALL
+SELECT 'bot reviewers (should be 0)', COUNT(*)
+FROM `github_population_metrics.stg_oss_event_counts_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'PullRequestReviewEvent'
+  AND ENDS_WITH(login, '[bot]')
+
+UNION ALL
+SELECT 'bot issue openers (should be 0)', COUNT(*)
+FROM `github_population_metrics.stg_oss_event_counts_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'IssuesEvent'
+  AND ENDS_WITH(login, '[bot]');
+
+-- Bot-performed terminal events *are* expected (bots can merge/close PRs)
+SELECT
+  COUNTIF(ENDS_WITH(event_actor_login, '[bot]')) AS bot_pr_terminal_events,
+  COUNT(*) AS total_pr_terminal_events,
+  ROUND(SAFE_DIVIDE(COUNTIF(ENDS_WITH(event_actor_login, '[bot]')) * 100.0, COUNT(*)), 2) AS pct_bot
+FROM `github_population_metrics.raw_extracted_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+  AND event_type = 'PullRequestEvent';
+
+-- -----------------------------------------------------------------------------
+-- 3.5 Validation of event counts
+-- -----------------------------------------------------------------------------
+-- Event type distribution in staging
+SELECT
+  event_type,
+  SUM(n_events) AS total_events,
+  COUNT(DISTINCT login) AS unique_users,
+  COUNT(*) AS monthly_rows
+FROM `github_population_metrics.stg_oss_event_counts_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+GROUP BY event_type
+ORDER BY total_events DESC;
+
+-- Raw extracted events distribution
+SELECT
+  event_type,
+  COUNT(*) AS event_count,
+  COUNT(DISTINCT event_actor_login) AS unique_actors
+FROM `github_population_metrics.raw_extracted_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+GROUP BY event_type
+ORDER BY event_count DESC;
+
+-- -----------------------------------------------------------------------------
+-- 3.6 Population summary
+-- -----------------------------------------------------------------------------
+SELECT
+  COUNT(DISTINCT login) AS total_users,
+  COUNTIF(total_opened_prs > 0) AS users_with_prs,
+  COUNTIF(total_merged_prs > 0) AS users_with_merged_prs,
+  COUNTIF(oss_reviews > 0) AS users_with_reviews,
+  COUNTIF(oss_pushes > 0) AS users_with_pushes,
+  COUNTIF(oss_issues_opened > 0) AS users_with_issues,
+
+  -- PR metrics
+  SUM(total_opened_prs) AS total_prs_opened,
+  SUM(total_merged_prs) AS total_prs_merged,
+  SUM(closed_without_merge_prs) AS total_prs_dropped,
+  ROUND(AVG(pr_merge_rate), 4) AS avg_merge_rate,
+  ROUND(AVG(pr_drop_rate), 4) AS avg_drop_rate,
+
+  -- Activity metrics
+  SUM(oss_pushes) AS total_pushes,
+  SUM(oss_reviews) AS total_reviews,
+  SUM(oss_issues_opened) AS total_issues,
+
+  -- Medians
+  APPROX_QUANTILES(total_opened_prs, 100)[OFFSET(50)] AS median_opened_prs,
+  APPROX_QUANTILES(total_merged_prs, 100)[OFFSET(50)] AS median_merged_prs,
+  APPROX_QUANTILES(oss_pushes, 100)[OFFSET(50)] AS median_pushes,
+  APPROX_QUANTILES(oss_reviews, 100)[OFFSET(50)] AS median_reviews,
+  APPROX_QUANTILES(oss_issues_opened, 100)[OFFSET(50)] AS median_issues,
+  APPROX_QUANTILES(avg_merge_latency_hours, 100)[OFFSET(50)] AS median_merge_latency_hours
+
+FROM `github_population_metrics.user_metrics_baseline`
+WHERE baseline_id = p_baseline_id;
+
+-- -----------------------------------------------------------------------------
+-- 3.7 Sanity check of CDF table structure
+-- -----------------------------------------------------------------------------
+-- Expected structure: 1001 points per metric, min_pct=0, max_pct=100
+SELECT
+  metric_name,
+  COUNT(*) AS n_points,
+  MIN(percentile) AS min_pct,
+  MAX(percentile) AS max_pct,
+  MIN(threshold_value) AS min_threshold,
+  MAX(threshold_value) AS max_threshold,
+  baseline_start_date,
+  baseline_end_date
+FROM `github_population_metrics.population_cdfs`
+WHERE baseline_id = p_baseline_id
+GROUP BY metric_name, baseline_start_date, baseline_end_date
+ORDER BY metric_name;
+
+-- -----------------------------------------------------------------------------
+-- 3.8 Percentile score threshold overview (key percentiles per metric)
+-- -----------------------------------------------------------------------------
+-- Shows min, p25, p50 (median), p75, p95, p99, max for all metrics
+WITH pivoted AS (
+  SELECT
+    metric_name,
+    MAX(IF(percentile = 0.0, threshold_value, NULL)) AS p0_min,
+    MAX(IF(percentile = 25.0, threshold_value, NULL)) AS p25,
+    MAX(IF(percentile = 50.0, threshold_value, NULL)) AS p50_median,
+    MAX(IF(percentile = 75.0, threshold_value, NULL)) AS p75,
+    MAX(IF(percentile = 90.0, threshold_value, NULL)) AS p90,
+    MAX(IF(percentile = 95.0, threshold_value, NULL)) AS p95,
+    MAX(IF(percentile = 99.0, threshold_value, NULL)) AS p99,
+    MAX(IF(percentile = 100.0, threshold_value, NULL)) AS p100_max
+  FROM `github_population_metrics.population_cdfs`
+  WHERE baseline_id = p_baseline_id
+  GROUP BY metric_name
+)
+SELECT
+  metric_name,
+  ROUND(p0_min, 2) AS min,
+  ROUND(p25, 2) AS p25,
+  ROUND(p50_median, 2) AS median,
+  ROUND(p75, 2) AS p75,
+  ROUND(p90, 2) AS p90,
+  ROUND(p95, 2) AS p95,
+  ROUND(p99, 2) AS p99,
+  ROUND(p100_max, 2) AS max
+FROM pivoted
+ORDER BY metric_name;
+
+-- -----------------------------------------------------------------------------
+-- 3.9 Monotonicity check (thresholds should be non-decreasing)
+-- -----------------------------------------------------------------------------
+-- Should return 0 rows if properly monotonic
+WITH lagged AS (
+  SELECT
+    metric_name,
+    percentile,
+    threshold_value,
+    LAG(threshold_value) OVER (PARTITION BY metric_name ORDER BY percentile) AS prev_threshold
+  FROM `github_population_metrics.population_cdfs`
+  WHERE baseline_id = p_baseline_id
+)
+SELECT metric_name, percentile, threshold_value, prev_threshold
+FROM lagged
+WHERE prev_threshold IS NOT NULL AND threshold_value < prev_threshold
+ORDER BY metric_name, percentile;
+
+-- -----------------------------------------------------------------------------
+-- 3.10 PR snapshot coverage validation
+-- -----------------------------------------------------------------------------
+-- Comment snapshots monthly distribution
+SELECT
+  month,
+  COUNT(DISTINCT CONCAT(CAST(repo_id AS STRING), ':', CAST(pr_number AS STRING))) AS unique_prs,
+  COUNT(*) AS snapshot_rows
+FROM `github_population_metrics.stg_pr_comment_snapshots_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+GROUP BY month
+ORDER BY month;
+
+-- Review snapshots monthly distribution
+SELECT
+  month,
+  COUNT(DISTINCT CONCAT(CAST(repo_id AS STRING), ':', CAST(pr_number AS STRING))) AS unique_prs,
+  COUNT(*) AS snapshot_rows
+FROM `github_population_metrics.stg_pr_review_snapshots_monthly`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+GROUP BY month
+ORDER BY month;
+
+-- -----------------------------------------------------------------------------
+-- 3.11 Distribution of terminal events
+-- -----------------------------------------------------------------------------
+SELECT
+  action,
+  COUNT(*) AS event_count,
+  COUNTIF(is_merge_event) AS merge_events,
+  COUNT(DISTINCT CONCAT(CAST(repo_id AS STRING), ':', CAST(pr_number AS STRING))) AS unique_prs
+FROM `github_population_metrics.stg_pr_terminal_events`
+WHERE month BETWEEN p_baseline_start_date AND p_baseline_end_date
+GROUP BY action
+ORDER BY event_count DESC;
+
+-- -----------------------------------------------------------------------------
+-- 3.12 Baseline metadata check
+-- -----------------------------------------------------------------------------
+SELECT *
+FROM `github_population_metrics.baseline_metadata`
+WHERE baseline_id = p_baseline_id;

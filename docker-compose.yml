@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: wave-metrics
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@postgres:5432/wave-metrics}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+      RUN_DB_MIGRATIONS: ${RUN_DB_MIGRATIONS:-1}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-180}
+      GH_MAX_RETRIES: ${GH_MAX_RETRIES:-2}
+      GH_CONCURRENCY_PER_TOKEN: ${GH_CONCURRENCY_PER_TOKEN:-2}
+      GH_BACKOFF_BASE_SECONDS: ${GH_BACKOFF_BASE_SECONDS:-5}
+      GH_BACKOFF_CAP_SECONDS: ${GH_BACKOFF_CAP_SECONDS:-60}
+      GH_REDIS_PREFIX: ${GH_REDIS_PREFIX:-gh:}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      POPULATION_BASELINE_ID: ${POPULATION_BASELINE_ID:-}
+      PORT: 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@postgres:5432/wave-metrics}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RUN_DB_MIGRATIONS: "0"
+      GH_MAX_RETRIES: ${GH_MAX_RETRIES:-2}
+      GH_CONCURRENCY_PER_TOKEN: ${GH_CONCURRENCY_PER_TOKEN:-2}
+      GH_BACKOFF_BASE_SECONDS: ${GH_BACKOFF_BASE_SECONDS:-5}
+      GH_BACKOFF_CAP_SECONDS: ${GH_BACKOFF_CAP_SECONDS:-60}
+      GH_REDIS_PREFIX: ${GH_REDIS_PREFIX:-gh:}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      POPULATION_BASELINE_ID: ${POPULATION_BASELINE_ID:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+
+volumes:
+  pgdata:
+    driver: local

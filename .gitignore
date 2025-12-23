@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+.env/
+venv/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Coverage/build
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Misc
+*.log
+
+# Locally generated and stored real-data fixtures
+tests/data_fixtures/valid_outputs_by_token.json
