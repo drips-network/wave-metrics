@@ -6,7 +6,10 @@ For pipeline details, see [`services/shared/README.md`](../shared/README.md).
 
 - [Worker](#worker)
   - [Architecture](#architecture)
+  - [Queues](#queues)
   - [Task: sync\_and\_compute](#task-sync_and_compute)
+  - [Task: refresh\_daily](#task-refresh_daily)
+  - [Task: backfill\_user](#task-backfill_user)
   - [Task Contract](#task-contract)
     - [Invariants](#invariants)
     - [Celery Settings](#celery-settings)
@@ -47,6 +50,16 @@ For pipeline details, see [`services/shared/README.md`](../shared/README.md).
                        (via Redis throttling)
 ```
 
+## Queues
+
+Worker traffic is separated into dedicated queues so backfills and daily refreshes can't starve API-triggered syncs.
+
+| Queue | Purpose | Tasks |
+|-------|---------|-------|
+| `default` | API-triggered syncs | `sync_and_compute` |
+| `daily` | Scheduled incremental refreshes | `refresh_daily` |
+| `backfill` | Operator-driven backfills | `backfill_user` |
+
 ## Task: sync_and_compute
 
 The primary task that orchestrates GitHub ingestion and metrics computation.
@@ -62,7 +75,7 @@ sync_and_compute(user_id, token_ref, backfill_days=None, triggered_by=None)
 | `user_id` | str | Internal user UUID |
 | `token_ref` | str | Short-lived token reference UUID (stored in Redis) |
 | `backfill_days` | int/null | Lookback window; `null` for incremental mode |
-| `triggered_by` | str | Origin label like `api`, `scheduler`, `manual`
+| `triggered_by` | str | Origin label like `api`, `manual` |
 
 **Return:**
 
@@ -99,13 +112,51 @@ If another sync is already running for the same user, the task returns:
 9. Invalidate Redis cache (`metrics:{user_id}`)
 10. Record completion in run metadata tables
 
+## Task: refresh_daily
+
+Vault-based scheduled task that runs without a `token_ref`.
+
+**Signature:**
+
+```python
+refresh_daily(user_id, partition_key=None, triggered_by=None)
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `user_id` | str | Internal user UUID |
+| `partition_key` | str/null | Grouping key for a scheduler tick (e.g. `daily:YYYY-MM-DD`) |
+| `triggered_by` | str/null | Origin label like `scheduler.daily` |
+
+**Notes:**
+
+- Requires token vault to be enabled and a token to be stored for the user
+- Updates `sync_jobs` to a terminal status (`COMPLETED`, `FAILED`, or `SKIPPED`) based on the pipeline result
+
+## Task: backfill_user
+
+Vault-based scheduled task for targeted backfills.
+
+**Signature:**
+
+```python
+backfill_user(user_id, backfill_days, partition_key=None, triggered_by=None)
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `user_id` | str | Internal user UUID |
+| `backfill_days` | int | Lookback window in days |
+| `partition_key` | str/null | Grouping key (used in `sync_jobs` and run metadata) for a backfill |
+| `triggered_by` | str/null | Origin label like `scheduler.backfill` |
+
 ## Task Contract
 
 ### Invariants
 
 1. **Idempotency:** Running identical arguments twice is safe. Domain writes use `INSERT ... ON CONFLICT DO UPDATE`. Run metadata appends a new row per execution.
 
-2. **Token ref leasing:** Token refs are leased per Celery task id. On success, the token ref is deleted; on failure, the token is retained so `acks_late` redelivery can retry (except for deterministic terminal failures like login mismatch, where the token ref is deleted).
+2. **Token ref leasing:** Token refs are leased per Celery task id. On success, the token ref is deleted; on failure, the token is retained so `acks_late` redelivery can retry. Deterministic terminal failures (such as login mismatch) also delete the token ref to prevent retries.
 
 3. **Atomic run metadata:** Metadata is written via separate transactions. Main transaction failures still record `FAILED` status.
 
@@ -121,8 +172,9 @@ If another sync is already running for the same user, the task returns:
 |---------|-------|-------------|
 | `broker` | Redis | Tasks in Redis lists |
 | `backend` | Redis | Results available via AsyncResult |
-| `task_default_queue` | `default` | Worker must consume with `-Q default` |
+| `task_default_queue` | `default` | Default queue for tasks; workers should consume the queues they serve (e.g. `-Q default`) |
 | `acks_late` | `True` | Task acknowledged on completion; worker crash triggers redelivery |
+| `task_routes` | (configured) | Routes `sync_and_compute`→`default`, `refresh_daily`→`daily`, `backfill_user`→`backfill` |
 
 ## Login Mismatch
 
@@ -132,7 +184,7 @@ When `github_login` is provided in the sync request, the worker verifies it matc
 2. Compares normalized logins (lowercase, trimmed)
 3. On mismatch:
    - Marks job as `FAILED` with error message
-   - Deletes the token ref (deterministic terminal failure, no retry)
+   - Finalizes the token ref as successful (deterministic terminal failure, no retry)
    - Returns `{"status": "failed", "error": "github_login does not match token owner ..."}`
 
 This is a terminal failure because the token cannot be used for the requested user.
@@ -224,7 +276,7 @@ Workers processing the same token coordinate via Redis:
 | `gh:sem:{hash}` | Concurrency semaphore |
 | `gh:cooldown:{hash}` | Secondary rate limit cooldown |
 
-Workers processing different tokens do not interfere.
+Workers processing different tokens don't interfere.
 
 ### Database Connections
 
@@ -263,7 +315,9 @@ Consequences:
 
 ```bash
 # Queue depth
-redis-cli LLEN celery
+redis-cli LLEN default
+redis-cli LLEN daily
+redis-cli LLEN backfill
 
 # Active tasks
 celery -A services.worker.app.main:celery_app inspect active
@@ -304,6 +358,8 @@ make up
 
 # Watch worker logs
 docker compose logs -f worker
+docker compose logs -f worker_daily
+docker compose logs -f worker_backfill
 
 # Trigger sync
 curl -X POST http://localhost:8000/api/v1/sync \

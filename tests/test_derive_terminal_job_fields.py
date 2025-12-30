@@ -4,7 +4,7 @@ from services.worker.app.tasks import _derive_terminal_job_fields_from_pipeline_
 def test_derive_non_dict_result_returns_failed_expected():
     status, error_message = _derive_terminal_job_fields_from_pipeline_result(["not", "a", "dict"])
     assert status == "FAILED"
-    assert "non-dict" in str(error_message or "").lower()
+    assert "unexpected_pipeline_status:non_dict" in str(error_message or "").lower()
 
 
 def test_derive_ok_status_returns_completed_expected():
@@ -16,7 +16,7 @@ def test_derive_ok_status_returns_completed_expected():
 def test_derive_locked_status_returns_skipped_expected():
     status, error_message = _derive_terminal_job_fields_from_pipeline_result({"status": "locked"})
     assert status == "SKIPPED"
-    assert "per-user lock" in str(error_message or "").lower()
+    assert str(error_message or "") == "locked"
 
 
 def test_derive_missing_token_status_returns_failed_with_error_expected():
@@ -38,17 +38,16 @@ def test_derive_token_invalid_status_returns_failed_with_error_expected():
 def test_derive_failed_status_returns_failed_with_fallback_expected():
     status, error_message = _derive_terminal_job_fields_from_pipeline_result({"status": "failed"})
     assert status == "FAILED"
-    assert "status=failed" in str(error_message or "").lower()
+    assert str(error_message or "").lower().startswith("unexpected_pipeline_status:failed")
 
 
 def test_derive_empty_status_returns_failed_expected():
     status, error_message = _derive_terminal_job_fields_from_pipeline_result({"status": "   "})
     assert status == "FAILED"
-    assert "empty status" in str(error_message or "").lower()
+    assert "unexpected_pipeline_status:<empty>" == str(error_message or "")
 
 
 def test_derive_unexpected_status_returns_failed_expected():
     status, error_message = _derive_terminal_job_fields_from_pipeline_result({"status": "weird"})
     assert status == "FAILED"
-    assert "unexpected pipeline status=weird" in str(error_message or "").lower()
-
+    assert "unexpected_pipeline_status:weird" in str(error_message or "")
