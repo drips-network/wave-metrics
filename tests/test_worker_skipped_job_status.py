@@ -71,6 +71,6 @@ def test_sync_and_compute_locked_pipeline_sets_skipped_job_status_expected(monke
 
     assert row is not None
     assert row[0] == "SKIPPED"
-    assert "per-user lock" in str(row[1] or "").lower()
+    assert str(row[1] or "") == "locked"
     assert row[2] is not None
     assert row[3] is not None

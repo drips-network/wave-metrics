@@ -27,7 +27,10 @@ services/
 ├── worker/                 # Celery background jobs
 │   └── app/
 │       ├── main.py         # Celery app factory
-│       └── tasks.py        # sync_and_compute task
+│       └── tasks.py        # sync_and_compute, refresh_daily, backfill_user
+├── scheduler/              # Batch scheduler
+│   └── app/
+│       └── main.py         # Daily/backfill enqueue modes
 └── shared/                 # Core logic (importable by orchestrators)
     ├── pipeline.py         # Ingestion + compute orchestration
     ├── github_client.py    # GitHub GraphQL helpers
@@ -39,7 +42,8 @@ services/
 **Components:**
 
 - **API** (FastAPI): Serves metrics reads and sync job submissions
-- **Worker** (Celery): Executes GitHub ingestion and metrics computation
+- **Worker** (Celery): Executes GitHub ingestion and metrics computation (separate queues for API, daily, and backfill lanes)
+- **Scheduler**: Enqueues daily refreshes and operator-triggered backfills (see [`services/scheduler/README.md`](services/scheduler/README.md))
 - **Postgres**: Normalized pull request data, serving tables, percentile threshold table
 - **Redis**: Celery broker, metrics cache, rate-limit coordination
 
@@ -51,6 +55,11 @@ services/
 4. Worker looks up percentile ranks
 5. Worker writes to `contributor_metrics`, invalidates cache
 6. `GET /api/v1/metrics` reads from serving tables (cached in Redis)
+
+Scheduled refreshes follow the same pipeline, but are enqueued by the scheduler:
+
+1. Scheduler enumerates `users`, inserts `sync_jobs` rows with a `partition_key`, enqueues `refresh_daily` tasks
+2. Daily/backfill workers run the same `ingest_and_compute_user` pipeline, sourcing tokens from the token vault
 
 ## Quick Start
 
@@ -78,6 +87,12 @@ curl http://localhost:8000/api/v1/jobs/<job_id>
 # Read metrics (after job completes)
 curl -H "Authorization: Bearer $API_AUTH_TOKEN" \
   "http://localhost:8000/api/v1/metrics?user_id=<uuid>"
+
+# Enqueue daily refreshes (requires token vault and previously-stored tokens)
+make scheduler-daily
+
+# Enqueue a targeted backfill (add --confirm for large selections)
+make scheduler-backfill SCHEDULER_BACKFILL_ARGS='--backfill-days 30 --github-logins octocat'
 ```
 
 Auth is controlled by `API_AUTH_TOKEN`. In production it should be set; for local development it can be empty to disable auth.

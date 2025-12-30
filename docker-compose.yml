@@ -57,6 +57,7 @@ services:
     build:
       context: .
       dockerfile: services/worker/Dockerfile
+    command: ["celery", "-A", "services.worker.app.main:celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "default"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@postgres:5432/wave-metrics}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
@@ -68,6 +69,62 @@ services:
       GH_REDIS_PREFIX: ${GH_REDIS_PREFIX:-gh:}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       POPULATION_BASELINE_ID: ${POPULATION_BASELINE_ID:-}
+      TOKEN_VAULT_KEYS_JSON: ${TOKEN_VAULT_KEYS_JSON:-}
+      TOKEN_VAULT_ACTIVE_KEY_ID: ${TOKEN_VAULT_ACTIVE_KEY_ID:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+
+  worker_daily:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    command: ["celery", "-A", "services.worker.app.main:celery_app", "worker", "--loglevel=info", "--concurrency=4", "-Q", "daily"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@postgres:5432/wave-metrics}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RUN_DB_MIGRATIONS: "0"
+      GH_MAX_RETRIES: ${GH_MAX_RETRIES:-2}
+      GH_CONCURRENCY_PER_TOKEN: ${GH_CONCURRENCY_PER_TOKEN:-2}
+      GH_BACKOFF_BASE_SECONDS: ${GH_BACKOFF_BASE_SECONDS:-5}
+      GH_BACKOFF_CAP_SECONDS: ${GH_BACKOFF_CAP_SECONDS:-60}
+      GH_REDIS_PREFIX: ${GH_REDIS_PREFIX:-gh:}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      POPULATION_BASELINE_ID: ${POPULATION_BASELINE_ID:-}
+      USER_LOCK_WAIT_TIMEOUT_SECONDS: ${USER_LOCK_WAIT_TIMEOUT_SECONDS:-0}
+      TOKEN_VAULT_KEYS_JSON: ${TOKEN_VAULT_KEYS_JSON:-}
+      TOKEN_VAULT_ACTIVE_KEY_ID: ${TOKEN_VAULT_ACTIVE_KEY_ID:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+
+  worker_backfill:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    command: ["celery", "-A", "services.worker.app.main:celery_app", "worker", "--loglevel=info", "--concurrency=1", "-Q", "backfill"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@postgres:5432/wave-metrics}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RUN_DB_MIGRATIONS: "0"
+      GH_MAX_RETRIES: ${GH_MAX_RETRIES:-2}
+      GH_CONCURRENCY_PER_TOKEN: ${GH_CONCURRENCY_PER_TOKEN:-2}
+      GH_BACKOFF_BASE_SECONDS: ${GH_BACKOFF_BASE_SECONDS:-5}
+      GH_BACKOFF_CAP_SECONDS: ${GH_BACKOFF_CAP_SECONDS:-60}
+      GH_REDIS_PREFIX: ${GH_REDIS_PREFIX:-gh:}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      POPULATION_BASELINE_ID: ${POPULATION_BASELINE_ID:-}
+      USER_LOCK_WAIT_TIMEOUT_SECONDS: ${USER_LOCK_WAIT_TIMEOUT_SECONDS:-30}
+      TOKEN_VAULT_KEYS_JSON: ${TOKEN_VAULT_KEYS_JSON:-}
+      TOKEN_VAULT_ACTIVE_KEY_ID: ${TOKEN_VAULT_ACTIVE_KEY_ID:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
     error_message TEXT,
     backfill_days INTEGER,
     triggered_by TEXT,
+    partition_key TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
@@ -75,11 +76,16 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
     window_end TIMESTAMPTZ
 );
 
+ALTER TABLE sync_jobs ADD COLUMN IF NOT EXISTS partition_key TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_sync_jobs_user_created_at
 ON sync_jobs (user_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_sync_jobs_status_created_at
 ON sync_jobs (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sync_jobs_triggered_partition_created_at
+ON sync_jobs (triggered_by, partition_key, created_at DESC);
 
 -- Encrypted token storage for scheduled refresh capability
 CREATE TABLE IF NOT EXISTS user_tokens (

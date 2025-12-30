@@ -245,8 +245,11 @@ Returns `True` when:
 | `job_id` | UUID PK | Celery task UUID |
 | `user_id` | UUID | Target user |
 | `github_login` | TEXT | GitHub login at enqueue time |
+| `backfill_days` | INTEGER | Optional lookback window |
+| `triggered_by` | TEXT | Origin label like `api`, `scheduler.daily`, `scheduler.backfill` |
+| `partition_key` | TEXT | Optional grouping key for scheduler ticks and backfill runs |
 | `status` | TEXT | PENDING, RUNNING, COMPLETED, FAILED, SKIPPED (terminal; did not run due to per-user lock) |
-| `error_message` | TEXT | Error details if failed |
+| `error_message` | TEXT | Error details if failed (queryable prefix conventions like `missing_token`, `token_invalid`, `enqueue_failed`) |
 | `sync_run_id` | UUID | Linked github_sync_runs row |
 | `compute_run_id` | UUID | Linked metric_compute_runs row |
 
