@@ -248,6 +248,7 @@ Exception: `GET /api/v1/jobs/{job_id}` is always unauthenticated.
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis for cache and Celery |
 | `SERVICE_VERSION` | `0.1.0` | Reported by `/version` |
 | `PORT` | `8000` | HTTP server port |
+| `API_BIND_HOST` | `0.0.0.0` | Bind host when starting the API via `python -m services.api.app.main` (Docker deploys use Gunicorn binds in `services/api/Dockerfile`) |
 | `RUN_DB_MIGRATIONS` | `1` | Run migrations on startup |
 | `CACHE_TTL_SECONDS` | `180` | Metrics cache TTL |
 | `API_AUTH_TOKEN` | (empty) | Bearer token for API authentication; required in production, empty disables auth for local dev |
