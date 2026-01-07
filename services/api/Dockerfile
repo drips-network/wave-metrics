@@ -28,6 +28,6 @@ RUN if [ -f /app/services/requirements.txt ]; then \
 
 EXPOSE 8000
 
-# Bind both IPv4 and IPv6 so Railway private networking (IPv6-only in some environments)
-# and public ingress (often IPv4) can both reach the service
-CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker -b 0.0.0.0:${PORT:-8000} -b [::]:${PORT:-8000} services.api.app.main:app"]
+# Bind on IPv6; on most Linux hosts this also serves IPv4 via v4-mapped addresses
+# Required for Railway private networking in IPv6-only environments; avoids dual-bind port conflicts
+CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker -b [::]:${PORT:-8000} services.api.app.main:app"]
