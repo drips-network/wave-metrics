@@ -20,6 +20,7 @@ For pipeline details, see [`services/shared/README.md`](../shared/README.md).
     - [Infrastructure Failures](#infrastructure-failures)
   - [Configuration](#configuration)
     - [Required](#required)
+    - [Token Refs](#token-refs)
     - [GitHub Throttling](#github-throttling)
     - [Token Vault](#token-vault)
     - [Operational](#operational)
@@ -54,9 +55,12 @@ For pipeline details, see [`services/shared/README.md`](../shared/README.md).
 
 Worker traffic is separated into dedicated queues so backfills and daily refreshes can't starve API-triggered syncs.
 
+API-triggered syncs can also be routed to the `bulk` queue via `/api/v1/sync` request body `queue="bulk"`.
+
 | Queue | Purpose | Tasks |
 |-------|---------|-------|
 | `default` | API-triggered syncs | `sync_and_compute` |
+| `bulk` | Bulk API-triggered syncs | `sync_and_compute` |
 | `daily` | Scheduled incremental refreshes | `refresh_daily` |
 | `backfill` | Operator-driven backfills | `backfill_user` |
 
@@ -225,6 +229,16 @@ Ingestion flushes and commits in batches via `db_session()`, so failures mid-run
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgresql+psycopg2://...localhost:5432/wave-metrics` | Postgres |
 | `REDIS_URL` | `redis://localhost:6379/0` | Broker, backend, throttling |
+| `TOKEN_REF_KEYS_JSON` | (required) | JSON object mapping key IDs to base64-encoded 32-byte keys (token_ref encryption) |
+| `TOKEN_REF_ACTIVE_KEY_ID` | (required) | Active key ID within `TOKEN_REF_KEYS_JSON` |
+
+### Token Refs
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOKEN_REF_KEY_PREFIX` | `gh:token_ref:` | Redis key prefix for token refs |
+| `TOKEN_REF_TTL_SECONDS_NORMAL` | `900` | Token ref TTL (seconds) for normal runs |
+| `TOKEN_REF_TTL_SECONDS_BULK` | `86400` | Token ref TTL (seconds) for bulk runs |
 
 ### GitHub Throttling
 

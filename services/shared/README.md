@@ -407,6 +407,10 @@ This avoids claiming a "perfect" 100th percentile when percentiles are sampled a
 | `GH_SEMAPHORE_ACQUIRE_TIMEOUT_SECONDS` | `60` | Max wait for semaphore |
 | `GH_COOLDOWN_MAX_WAIT_SECONDS` | `600` | Cap on secondary cooldown waits |
 | `TOKEN_REF_KEY_PREFIX` | `gh:token_ref:` | Redis key prefix for token refs |
+| `TOKEN_REF_KEYS_JSON` | (required) | JSON object mapping key IDs to base64-encoded 32-byte keys (token_ref encryption) |
+| `TOKEN_REF_ACTIVE_KEY_ID` | (required) | Active key ID within `TOKEN_REF_KEYS_JSON` |
+| `TOKEN_REF_TTL_SECONDS_NORMAL` | `900` | Token ref TTL (seconds) for normal runs |
+| `TOKEN_REF_TTL_SECONDS_BULK` | `86400` | Token ref TTL (seconds) for bulk runs |
 | `USER_LOCK_TTL_SECONDS` | `900` | Per-user sync lock TTL |
 | `USER_LOCK_WAIT_TIMEOUT_SECONDS` | `0` | Wait timeout for user lock |
 | `REPO_LANGUAGE_CACHE_MAX_REPOS` | `500` | LRU cache size for repo languages |

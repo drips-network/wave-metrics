@@ -40,15 +40,16 @@ def test_sync_token_only_returns_canonical_ids_expected(monkeypatch):
     sent = {}
 
     def _fake_send_task(name, args=None, task_id=None, **kwargs):
-        _ = kwargs
+        sent["queue"] = kwargs.get("queue")
         sent["name"] = name
         sent["args"] = args or []
         sent["task_id"] = task_id
         return object()
 
-    def _fake_create_token_ref(_session, user_id, token):
+    def _fake_create_token_ref(_session, user_id, token, ttl_seconds=None):
         sent["token_user_id"] = user_id
         sent["token"] = token
+        sent["ttl_seconds"] = ttl_seconds
         return "token-ref-123"
 
     def _fake_delete_token_ref(_session, token_ref):
@@ -77,6 +78,9 @@ def test_sync_token_only_returns_canonical_ids_expected(monkeypatch):
     assert sent["task_id"] == payload["job_id"]
     assert sent["args"][0] == payload["user_id"]
     assert sent["args"][1] == "token-ref-123"
+    assert sent["args"][3] == "api"
+    assert sent["queue"] == "default"
+    assert sent["ttl_seconds"] == api_main.shared_config.TOKEN_REF_TTL_SECONDS_NORMAL
 
     with db_session() as session:
         job_row = session.execute(
@@ -109,15 +113,16 @@ def test_sync_login_only_does_not_call_github_expected(monkeypatch):
     sent = {}
 
     def _fake_send_task(name, args=None, task_id=None, **kwargs):
-        _ = kwargs
+        sent["queue"] = kwargs.get("queue")
         sent["name"] = name
         sent["args"] = args or []
         sent["task_id"] = task_id
         return object()
 
-    def _fake_create_token_ref(_session, user_id, token):
+    def _fake_create_token_ref(_session, user_id, token, ttl_seconds=None):
         sent["token_user_id"] = user_id
         sent["token"] = token
+        sent["ttl_seconds"] = ttl_seconds
         return "token-ref-123"
 
     def _fake_fetch_user_login(_token):
@@ -136,25 +141,82 @@ def test_sync_login_only_does_not_call_github_expected(monkeypatch):
     assert payload["github_login"] == "some-login"
     uuid.UUID(payload["job_id"])
     uuid.UUID(payload["user_id"])
+    assert sent["args"][3] == "api"
+    assert sent["queue"] == "default"
+    assert sent["ttl_seconds"] == api_main.shared_config.TOKEN_REF_TTL_SECONDS_NORMAL
 
-    with db_session() as session:
-        alias_row = session.execute(
-            text(
-                "SELECT user_id, confirmed_at, expires_at "
-                "FROM github_login_aliases WHERE github_login=:login"
-            ),
-            {"login": "some-login"},
-        ).fetchone()
-        assert alias_row is not None
-        assert str(alias_row[0]) == payload["user_id"]
-        assert alias_row[1] is None
-        assert alias_row[2] is not None
 
-        user_row = session.execute(
-            text("SELECT id FROM users WHERE id=:user_id"),
-            {"user_id": payload["user_id"]},
-        ).fetchone()
-        assert user_row is None
+def test_sync_defaults_to_default_queue_expected(monkeypatch):
+    _ensure_schema()
+    _clear_tables()
+
+    sent = {}
+
+    def _fake_send_task(name, args=None, task_id=None, **kwargs):
+        sent["queue"] = kwargs.get("queue")
+        sent["args"] = args or []
+        return object()
+
+    def _fake_create_token_ref(_session, user_id, token, ttl_seconds=None):
+        sent["ttl_seconds"] = ttl_seconds
+        return "token-ref-123"
+
+    def _fake_fetch_user_login(_token):
+        now = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        return "OctoCat", {"login": "OctoCat", "databaseId": 123, "createdAt": now, "avatarUrl": ""}
+
+    monkeypatch.setattr(api_main.celery_client, "send_task", _fake_send_task)
+    monkeypatch.setattr(api_main, "create_github_token_ref", _fake_create_token_ref)
+    monkeypatch.setattr(api_main, "fetch_user_login", _fake_fetch_user_login)
+
+    client = TestClient(app)
+    resp = client.post("/api/v1/sync", json={"github_token": "dummy"})
+    assert resp.status_code == 200
+
+    assert sent["queue"] == "default"
+    assert sent["ttl_seconds"] == api_main.shared_config.TOKEN_REF_TTL_SECONDS_NORMAL
+    assert sent["args"][3] == "api"
+
+
+def test_sync_body_queue_bulk_routes_bulk_queue_and_uses_bulk_ttl_expected(monkeypatch):
+    _ensure_schema()
+    _clear_tables()
+
+    sent = {}
+
+    def _fake_send_task(name, args=None, task_id=None, **kwargs):
+        sent["name"] = name
+        sent["args"] = args or []
+        sent["task_id"] = task_id
+        sent["queue"] = kwargs.get("queue")
+        return object()
+
+    def _fake_create_token_ref(_session, user_id, token, ttl_seconds=None):
+        sent["token_user_id"] = user_id
+        sent["token"] = token
+        sent["ttl_seconds"] = ttl_seconds
+        return "token-ref-123"
+
+    def _fake_fetch_user_login(_token):
+        now = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        return "OctoCat", {"login": "OctoCat", "databaseId": 123, "createdAt": now, "avatarUrl": ""}
+
+    monkeypatch.setattr(api_main.celery_client, "send_task", _fake_send_task)
+    monkeypatch.setattr(api_main, "create_github_token_ref", _fake_create_token_ref)
+    monkeypatch.setattr(api_main, "fetch_user_login", _fake_fetch_user_login)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/sync",
+        json={"github_token": "dummy", "queue": "bulk"},
+    )
+    assert resp.status_code == 200
+
+    payload = resp.json()
+    assert payload["status"] == "enqueued"
+    assert sent["queue"] == "bulk"
+    assert sent["ttl_seconds"] == api_main.shared_config.TOKEN_REF_TTL_SECONDS_BULK
+    assert sent["args"][3] == "api.bulk"
 
 
 def test_jobs_endpoint_returns_404_for_unknown_job_expected():

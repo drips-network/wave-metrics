@@ -132,6 +132,7 @@ Enqueues a GitHub ingestion and metrics computation job.
 | `github_login` | No | GitHub login (lowercased/trimmed) |
 | `github_token` | Yes (or `X-GitHub-Token`) | OAuth token for ingestion and metrics |
 | `backfill_days` | No | Lookback window in days; `null` enables incremental mode |
+| `queue` | No | Celery queue selection; must be `default` or `bulk` (allowlisted), defaults to `default` when omitted, and can't access scheduled lanes (`daily`/`backfill`) |
 
 **Resolution precedence:**
 
@@ -253,6 +254,10 @@ Exception: `GET /api/v1/jobs/{job_id}` is always unauthenticated.
 | `RUNNING_JOB_STALE_SECONDS` | `3600` | Mark RUNNING jobs stale after this many seconds |
 | `GITHUB_LOGIN_RESERVATION_TTL_SECONDS` | `86400` | TTL for unconfirmed github_login reservations |
 | `POPULATION_BASELINE_ID` | (empty) | Pins baseline for percentile lookup |
+| `TOKEN_REF_KEYS_JSON` | (required) | JSON object mapping key IDs to base64-encoded 32-byte keys (token_ref encryption) |
+| `TOKEN_REF_ACTIVE_KEY_ID` | (required) | Active key ID within `TOKEN_REF_KEYS_JSON` |
+| `TOKEN_REF_TTL_SECONDS_NORMAL` | `900` | Token ref TTL (seconds) for normal runs |
+| `TOKEN_REF_TTL_SECONDS_BULK` | `86400` | Token ref TTL (seconds) for bulk runs |
 | `GH_REDIS_PREFIX` | `gh:` | Redis key prefix for rate-limit keys |
 | `GH_BACKOFF_BASE_SECONDS` | `5` | Initial backoff for GitHub retries |
 | `GH_BACKOFF_CAP_SECONDS` | `60` | Maximum backoff for GitHub retries |

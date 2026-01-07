@@ -12,6 +12,7 @@ from fastapi import FastAPI, Depends, Header, HTTPException, Query
 from sqlalchemy import text
 
 from services.shared.caching import get_cached_metrics, set_cached_metrics, get_redis
+from services.shared import config as shared_config
 from services.shared.config import (
     GITHUB_LOGIN_RESERVATION_TTL_SECONDS,
     HEALTH_CHECK_BROKER,
@@ -348,7 +349,7 @@ def _resolve_sync_user_identity(body: SyncRequest, github_token: str, session) -
                     f"SET user_id = :user_id, expires_at = {expires_sql}, updated_at = NOW() "
                     "WHERE github_login = :login"
                 ),
-                {"login": requested_login, "user_id": requested_user_id, "ttl_seconds": GITHUB_LOGIN_RESERVATION_TTL_SECONDS},
+                {"login": requested_login, "user_id": requested_user_id, "ttl_seconds": GITHUB_LOGIN_RESERVATION_TTL_SECONDS},  # noqa
             )
             return requested_user_id, requested_login
 
@@ -358,7 +359,7 @@ def _resolve_sync_user_identity(body: SyncRequest, github_token: str, session) -
                 f"VALUES (:login, :user_id, {expires_sql}) "
                 "ON CONFLICT (github_login) DO NOTHING"
             ),
-            {"login": requested_login, "user_id": requested_user_id, "ttl_seconds": GITHUB_LOGIN_RESERVATION_TTL_SECONDS},
+            {"login": requested_login, "user_id": requested_user_id, "ttl_seconds": GITHUB_LOGIN_RESERVATION_TTL_SECONDS},  # noqa
         )
 
         existing = session.execute(
@@ -406,7 +407,7 @@ def _resolve_sync_user_identity(body: SyncRequest, github_token: str, session) -
                 f"VALUES (:login, :user_id, {expires_sql}) "
                 "ON CONFLICT (github_login) DO NOTHING"
             ),
-            {"login": requested_login, "user_id": desired_user_id, "ttl_seconds": GITHUB_LOGIN_RESERVATION_TTL_SECONDS},
+            {"login": requested_login, "user_id": desired_user_id, "ttl_seconds": GITHUB_LOGIN_RESERVATION_TTL_SECONDS},  # noqa
         )
 
         alias_row = session.execute(
@@ -438,7 +439,7 @@ def _resolve_sync_user_identity(body: SyncRequest, github_token: str, session) -
                 "  AND expires_at IS NOT NULL "
                 "  AND expires_at <= NOW()"
             ),
-            {"login": requested_login, "user_id": desired_user_id, "ttl_seconds": GITHUB_LOGIN_RESERVATION_TTL_SECONDS},
+            {"login": requested_login, "user_id": desired_user_id, "ttl_seconds": GITHUB_LOGIN_RESERVATION_TTL_SECONDS},  # noqa
         )
 
         if (updated.rowcount or 0) > 0:
@@ -499,7 +500,7 @@ def _resolve_sync_user_identity(body: SyncRequest, github_token: str, session) -
 
     session.execute(
         text(
-            "INSERT INTO github_login_aliases (github_login, user_id, confirmed_at, expires_at, github_user_id, updated_at) "
+            "INSERT INTO github_login_aliases (github_login, user_id, confirmed_at, expires_at, github_user_id, updated_at) "  # noqa
             "VALUES (:login, :user_id, NOW(), NULL, :gh_uid, NOW()) "
             "ON CONFLICT (github_login) DO UPDATE SET "
             "user_id=EXCLUDED.user_id, "
@@ -658,6 +659,15 @@ def sync_github(
     if not token:
         raise HTTPException(status_code=400, detail="github_token is required")
 
+    queue_name = body.queue or "default"
+    is_bulk = queue_name == "bulk"
+    token_ref_ttl_seconds = (
+        shared_config.TOKEN_REF_TTL_SECONDS_BULK
+        if is_bulk
+        else shared_config.TOKEN_REF_TTL_SECONDS_NORMAL
+    )
+    triggered_by = "api.bulk" if is_bulk else "api"
+
     try:
         with db_session() as session:
             user_id, github_login = _resolve_sync_user_identity(body, token, session)
@@ -674,7 +684,7 @@ def sync_github(
                     "user_id": user_id,
                     "github_login": github_login,
                     "backfill_days": effective_backfill_days,
-                    "triggered_by": "api",
+                    "triggered_by": triggered_by,
                 },
             )
     except HTTPException:
@@ -685,12 +695,13 @@ def sync_github(
 
     token_ref = None
     try:
-        token_ref = create_github_token_ref(None, user_id, token)
+        token_ref = create_github_token_ref(None, user_id, token, ttl_seconds=token_ref_ttl_seconds)
 
         celery_client.send_task(
             "sync_and_compute",
-            args=[user_id, token_ref, effective_backfill_days, "api"],
+            args=[user_id, token_ref, effective_backfill_days, triggered_by],
             task_id=job_id,
+            queue=queue_name,
         )
     except Exception as exc:
         if token_ref:
@@ -726,11 +737,13 @@ def sync_github(
         raise HTTPException(status_code=500, detail="Failed to enqueue job") from exc
 
     logger.info(
-        "sync: enqueued sync_and_compute job_id=%s user_id=%s github_login=%s backfill_days=%s",
+        "sync: enqueued sync_and_compute job_id=%s user_id=%s github_login=%s backfill_days=%s triggered_by=%s queue=%s",  # noqa
         job_id,
         user_id,
         github_login,
         effective_backfill_days,
+        triggered_by,
+        queue_name,
     )
 
     return {"job_id": job_id, "status": "enqueued", "user_id": user_id, "github_login": github_login}
@@ -753,7 +766,7 @@ def get_job(job_id: uuid.UUID, db=Depends(get_session)) -> Dict[str, Any]:
 
     row = db.execute(
         text(
-            "SELECT job_id, status, user_id, github_login, created_at, started_at, completed_at, stale_marked_at, error_message "
+            "SELECT job_id, status, user_id, github_login, created_at, started_at, completed_at, stale_marked_at, error_message "  # noqa
             "FROM sync_jobs "
             "WHERE job_id = :job_id"
         ),
@@ -787,7 +800,7 @@ def get_job(job_id: uuid.UUID, db=Depends(get_session)) -> Dict[str, Any]:
                 )
                 row = db.execute(
                     text(
-                        "SELECT job_id, status, user_id, github_login, created_at, started_at, completed_at, error_message "
+                        "SELECT job_id, status, user_id, github_login, created_at, started_at, completed_at, error_message "  # noqa
                         "FROM sync_jobs "
                         "WHERE job_id = :job_id"
                     ),

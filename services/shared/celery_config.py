@@ -6,6 +6,7 @@ CELERY_DEFAULT_QUEUE = "default"
 
 CELERY_QUEUE_NAMES = (
     "default",
+    "bulk",
     "daily",
     "backfill",
 )
