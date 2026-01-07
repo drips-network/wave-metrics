@@ -39,6 +39,13 @@ Verifies Postgres and Redis connectivity.
 
 Returns `"degraded"` when either dependency is unreachable. Use for load balancer health checks.
 
+HTTP status:
+- `200` when healthy
+- `503` when degraded
+
+Railway deploy note:
+- Set the service health check path to `/health` and enable rolling/wait-for-healthy deploys so a misconfigured release doesn't replace the previous healthy deployment
+
 When `HEALTH_CHECK_BROKER=1`, the response also includes:
 
 ```json
