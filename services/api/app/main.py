@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from celery import Celery
 from kombu.exceptions import OperationalError
 from fastapi import FastAPI, Depends, Header, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from services.shared.caching import get_cached_metrics, set_cached_metrics, get_redis
@@ -587,7 +588,7 @@ def health() -> Dict[str, Any]:
         payload["broker"] = broker_ok
         payload["broker_workers"] = broker_workers
 
-    return payload
+    return JSONResponse(status_code=200 if healthy else 503, content=payload)
 
 
 @app.get("/version")
@@ -822,4 +823,7 @@ def get_job(job_id: uuid.UUID, db=Depends(get_session)) -> Dict[str, Any]:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+    port = int(os.getenv("PORT", "8000"))
+    host = str(os.getenv("API_BIND_HOST", "0.0.0.0")).strip() or "0.0.0.0"
+
+    uvicorn.run(app, host=host, port=port)

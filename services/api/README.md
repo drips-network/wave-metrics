@@ -39,6 +39,13 @@ Verifies Postgres and Redis connectivity.
 
 Returns `"degraded"` when either dependency is unreachable. Use for load balancer health checks.
 
+HTTP status:
+- `200` when healthy
+- `503` when degraded
+
+Railway deploy note:
+- Set the service health check path to `/health` and enable rolling/wait-for-healthy deploys so a misconfigured release doesn't replace the previous healthy deployment
+
 When `HEALTH_CHECK_BROKER=1`, the response also includes:
 
 ```json
@@ -248,6 +255,7 @@ Exception: `GET /api/v1/jobs/{job_id}` is always unauthenticated.
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis for cache and Celery |
 | `SERVICE_VERSION` | `0.1.0` | Reported by `/version` |
 | `PORT` | `8000` | HTTP server port |
+| `API_BIND_HOST` | `0.0.0.0` | Uvicorn bind host; set to `::` when environment (e.g. Railway networking) requires IPv6 listening |
 | `RUN_DB_MIGRATIONS` | `1` | Run migrations on startup |
 | `CACHE_TTL_SECONDS` | `180` | Metrics cache TTL |
 | `API_AUTH_TOKEN` | (empty) | Bearer token for API authentication; required in production, empty disables auth for local dev |
