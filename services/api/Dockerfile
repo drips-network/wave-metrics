@@ -28,4 +28,6 @@ RUN if [ -f /app/services/requirements.txt ]; then \
 
 EXPOSE 8000
 
-CMD ["python", "-m", "services.api.app.main"]
+# Bind both IPv4 and IPv6 so Railway private networking (IPv6-only in some environments)
+# and public ingress (often IPv4) can both reach the service
+CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker -b 0.0.0.0:${PORT:-8000} -b [::]:${PORT:-8000} services.api.app.main:app"]

@@ -16,6 +16,7 @@ license-files = ["LICENSE"]
 dependencies = [
   "fastapi>=0.115,<0.116",
   "uvicorn[standard]>=0.30,<0.31",
+  "gunicorn>=22,<23",
   "SQLAlchemy>=2.0.31,<3",
   "psycopg2-binary>=2.9.9,<3",
   "redis>=5.0.7,<6",
