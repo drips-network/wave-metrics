@@ -1,3 +1,5 @@
+import base64
+import json
 import sys
 from pathlib import Path
 
@@ -24,3 +26,14 @@ def _isolate_test_env(monkeypatch):
     monkeypatch.setattr("services.shared.config.TOKEN_VAULT_KEYS_JSON", "", raising=False)
     monkeypatch.setattr("services.shared.config.TOKEN_VAULT_ACTIVE_KEY_ID", "", raising=False)
     monkeypatch.setattr("services.shared.config.TOKEN_VAULT_ENABLED", False, raising=False)
+
+    test_key_b64 = base64.b64encode(b"\x00" * 32).decode("ascii")
+    monkeypatch.setattr(
+        "services.shared.config.TOKEN_REF_KEYS_JSON",
+        json.dumps({"test": test_key_b64}),
+        raising=False,
+    )
+    monkeypatch.setattr("services.shared.config.TOKEN_REF_ACTIVE_KEY_ID", "test", raising=False)
+    monkeypatch.setattr("services.shared.config.TOKEN_REF_TTL_SECONDS_NORMAL", 900, raising=False)
+    monkeypatch.setattr("services.shared.config.TOKEN_REF_TTL_SECONDS_BULK", 86400, raising=False)
+    monkeypatch.setattr("services.shared.token_store._TOKEN_REF_KEYRING_CACHE", None, raising=False)

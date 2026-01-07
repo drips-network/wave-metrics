@@ -62,6 +62,7 @@ class SyncRequest(BaseModel):
     github_login: Optional[str] = None
     github_token: Optional[SecretStr] = None
     backfill_days: Optional[int] = Field(default=None, ge=1)
+    queue: Optional[str] = None
 
     @field_validator("user_id")
     @classmethod
@@ -83,5 +84,20 @@ class SyncRequest(BaseModel):
 
         if not _GITHUB_LOGIN_RE.match(normalized):
             raise ValueError("github_login is invalid")
+
+        return normalized
+
+    @field_validator("queue")
+    @classmethod
+    def _validate_queue(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+
+        if normalized not in {"default", "bulk"}:
+            raise ValueError("queue must be 'default' or 'bulk'")
 
         return normalized

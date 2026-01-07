@@ -1,4 +1,5 @@
 import json
+import uuid
 
 import pytest
 
@@ -8,30 +9,46 @@ from services.shared import token_store
 class FakeRedis:
     def __init__(self):
         self._values = {}
+        self._ttls = {}
 
     def setex(self, key, _ttl_seconds, value):
         self._values[key] = value
+        self._ttls[key] = int(_ttl_seconds)
         return True
 
     def set(self, key, value, nx=False, ex=None):
-        _ = ex
         if nx and key in self._values:
             return False
         self._values[key] = value
+        if ex is not None:
+            self._ttls[key] = int(ex)
         return True
 
     def delete(self, key):
         self._values.pop(key, None)
+        self._ttls.pop(key, None)
         return 1
 
     def get(self, key):
         return self._values.get(key)
+
+    def ttl(self, key):
+        if key not in self._values:
+            return -2
+        return self._ttls.get(key, -1)
+
+    def expire(self, key, seconds):
+        if key not in self._values:
+            return 0
+        self._ttls[key] = int(seconds)
+        return 1
 
     def eval(self, _script, _numkeys, key):
         value = self._values.get(key)
         if value is None:
             return None
         self._values.pop(key, None)
+        self._ttls.pop(key, None)
         return value
 
 
@@ -43,13 +60,114 @@ def redis_client():
 def test_create_and_consume_github_token_ref_happy_path_expected(redis_client, monkeypatch):
     monkeypatch.setattr(token_store, "get_redis", lambda: redis_client)
 
-    token_ref = token_store.create_github_token_ref(None, user_id="user-123", github_token="token-abc", ttl_seconds=60)
+    token_ref = token_store.create_github_token_ref(
+        None,
+        user_id="user-123",
+        github_token="token-abc",
+        ttl_seconds=60,
+    )
 
     token = token_store.consume_github_token_ref(None, token_ref, expected_user_id="user-123")
     assert token == "token-abc"
 
     with pytest.raises(ValueError):
         token_store.consume_github_token_ref(None, token_ref, expected_user_id="user-123")
+
+
+def test_create_github_token_ref_stores_encrypted_payload_expected(redis_client, monkeypatch):
+    monkeypatch.setattr(token_store, "get_redis", lambda: redis_client)
+
+    token_ref = token_store.create_github_token_ref(
+        None,
+        user_id="user-123",
+        github_token="token-abc",
+        ttl_seconds=60,
+    )
+
+    raw_payload = redis_client.get(token_store._token_ref_key(token_ref))
+    payload = json.loads(raw_payload)
+
+    assert payload.get("github_token") != "token-abc"
+    assert (payload.get("enc") or {}).get("alg") == token_store.TOKEN_REF_ENCRYPTION_ALG
+
+
+def test_decode_token_ref_payload_rejects_missing_enc_expected(redis_client, monkeypatch):
+    monkeypatch.setattr(token_store, "get_redis", lambda: redis_client)
+
+    token_ref = "missing-enc"
+    redis_client._values[token_store._token_ref_key(token_ref)] = json.dumps(
+        {"user_id": "user-123", "github_token": "plaintext-token"}
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        token_store.consume_github_token_ref(None, token_ref, expected_user_id="user-123")
+
+    assert str(excinfo.value) == "token_ref payload could not be decoded"
+
+
+def test_token_store_user_id_normalizes_uuid_expected(redis_client, monkeypatch):
+    monkeypatch.setattr(token_store, "get_redis", lambda: redis_client)
+
+    user_id = uuid.uuid4()
+    token_ref = token_store.create_github_token_ref(
+        None,
+        user_id=user_id,
+        github_token="token-abc",
+        ttl_seconds=60,
+    )
+
+    token = token_store.consume_github_token_ref(None, token_ref, expected_user_id=user_id)
+    assert token == "token-abc"
+
+
+def test_decode_token_ref_payload_rejects_non_object_expected(redis_client, monkeypatch):
+    monkeypatch.setattr(token_store, "get_redis", lambda: redis_client)
+
+    token_ref = "non-object"
+    redis_client._values[token_store._token_ref_key(token_ref)] = json.dumps([])
+
+    with pytest.raises(ValueError) as excinfo:
+        token_store.consume_github_token_ref(None, token_ref)
+
+    assert str(excinfo.value) == "token_ref payload could not be decoded"
+
+
+def test_decode_token_ref_payload_rejects_non_object_enc_expected(redis_client, monkeypatch):
+    monkeypatch.setattr(token_store, "get_redis", lambda: redis_client)
+
+    token_ref = "bad-enc"
+    redis_client._values[token_store._token_ref_key(token_ref)] = json.dumps(
+        {"user_id": "user-123", "github_token": "ciphertext", "enc": "nope"}
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        token_store.consume_github_token_ref(None, token_ref)
+
+    assert str(excinfo.value) == "token_ref payload could not be decoded"
+
+
+def test_lease_extends_token_ttl_to_lease_ttl_expected(redis_client, monkeypatch):
+    monkeypatch.setattr(token_store, "get_redis", lambda: redis_client)
+
+    token_ref = token_store.create_github_token_ref(
+        None,
+        user_id="user-123",
+        github_token="token-lease",
+        ttl_seconds=5,
+    )
+
+    token_key = token_store._token_ref_key(token_ref)
+    assert redis_client.ttl(token_key) == 5
+
+    token = token_store.lease_github_token_ref(
+        None,
+        token_ref,
+        expected_user_id="user-123",
+        lease_id="task-1",
+        lease_ttl_seconds=60,
+    )
+    assert token == "token-lease"
+    assert redis_client.ttl(token_key) == 60
 
 
 def test_consume_github_token_ref_not_found_raises_expected(redis_client, monkeypatch):

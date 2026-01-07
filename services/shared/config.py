@@ -161,6 +161,47 @@ def validate_config():
     if GITHUB_LOGIN_RESERVATION_TTL_SECONDS < 60:
         errors.append("GITHUB_LOGIN_RESERVATION_TTL_SECONDS must be >= 60")
 
+    if TOKEN_REF_TTL_SECONDS_NORMAL < 1:
+        errors.append("TOKEN_REF_TTL_SECONDS_NORMAL must be >= 1")
+    if TOKEN_REF_TTL_SECONDS_BULK < 1:
+        errors.append("TOKEN_REF_TTL_SECONDS_BULK must be >= 1")
+
+    token_ref_keys_json = str(TOKEN_REF_KEYS_JSON or "").strip()
+    token_ref_active_key_id = str(TOKEN_REF_ACTIVE_KEY_ID or "").strip()
+
+    if not token_ref_keys_json:
+        errors.append("TOKEN_REF_KEYS_JSON is required")
+    if not token_ref_active_key_id:
+        errors.append("TOKEN_REF_ACTIVE_KEY_ID is required")
+    if token_ref_keys_json and token_ref_active_key_id:
+        try:
+            import base64
+            import json
+
+            keyring = json.loads(token_ref_keys_json)
+            if not isinstance(keyring, dict):
+                errors.append("TOKEN_REF_KEYS_JSON must be a JSON object mapping key IDs to base64 keys")
+            else:
+                if token_ref_active_key_id not in keyring:
+                    errors.append(f"TOKEN_REF_ACTIVE_KEY_ID '{token_ref_active_key_id}' not in keyring")
+
+                for key_id, key_b64 in keyring.items():
+                    if not str(key_id or "").strip():
+                        errors.append("TOKEN_REF_KEYS_JSON contains an empty key id")
+                        continue
+                    try:
+                        key_bytes = base64.b64decode(str(key_b64), validate=True)
+                    except Exception as exc:
+                        errors.append(f"Token ref key '{key_id}' is not valid base64: {exc}")
+                        continue
+
+                    if len(key_bytes) != 32:
+                        errors.append(f"Token ref key '{key_id}' must be 32 bytes (got {len(key_bytes)})")
+        except json.JSONDecodeError as exc:
+            errors.append(f"TOKEN_REF_KEYS_JSON is not valid JSON: {exc}")
+        except Exception as exc:
+            errors.append(f"TOKEN_REF_KEYS_JSON validation failed: {exc}")
+
     if TOKEN_VAULT_KEYS_JSON or TOKEN_VAULT_ACTIVE_KEY_ID:
         if not TOKEN_VAULT_KEYS_JSON:
             errors.append("TOKEN_VAULT_ACTIVE_KEY_ID requires TOKEN_VAULT_KEYS_JSON")
@@ -210,6 +251,12 @@ RUN_DB_MIGRATIONS = env_or("RUN_DB_MIGRATIONS", "1") == "1"
 CACHE_TTL_SECONDS = int(env_or("CACHE_TTL_SECONDS", "180"))
 API_AUTH_TOKEN = env_or("API_AUTH_TOKEN", "")
 POPULATION_BASELINE_ID = env_or("POPULATION_BASELINE_ID", "")
+
+# Token ref encryption configuration
+TOKEN_REF_KEYS_JSON = env_or("TOKEN_REF_KEYS_JSON", "")
+TOKEN_REF_ACTIVE_KEY_ID = env_or("TOKEN_REF_ACTIVE_KEY_ID", "")
+TOKEN_REF_TTL_SECONDS_NORMAL = int(env_or("TOKEN_REF_TTL_SECONDS_NORMAL", "900"))
+TOKEN_REF_TTL_SECONDS_BULK = int(env_or("TOKEN_REF_TTL_SECONDS_BULK", "86400"))
 
 # Token vault configuration
 TOKEN_VAULT_KEYS_JSON = env_or("TOKEN_VAULT_KEYS_JSON", "")

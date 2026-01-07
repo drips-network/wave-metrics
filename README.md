@@ -81,6 +81,10 @@ curl -X POST http://localhost:8000/api/v1/sync \
   -H "Authorization: Bearer $API_AUTH_TOKEN" \
   -d '{"github_token":"ghp_xxx"}'
 
+# For bulk refresh runs, route to the `bulk` queue with:
+#   -d '{"github_token":"ghp_xxx","queue":"bulk"}'
+# and ensure a worker is consuming the `bulk` queue (e.g. `docker compose up -d worker_bulk`).
+
 # Poll job (unauthenticated)
 curl http://localhost:8000/api/v1/jobs/<job_id>
 
@@ -96,6 +100,8 @@ make scheduler-backfill SCHEDULER_BACKFILL_ARGS='--backfill-days 30 --github-log
 ```
 
 Auth is controlled by `API_AUTH_TOKEN`. In production it should be set; for local development it can be empty to disable auth.
+
+Token refs stored in Redis are encrypted; `TOKEN_REF_KEYS_JSON` and `TOKEN_REF_ACTIVE_KEY_ID` are required (local dev defaults are in `.env.example`).
 
 
 ## API Endpoints
