@@ -1,4 +1,0 @@
-"""
-Scheduler app module
-"""
-

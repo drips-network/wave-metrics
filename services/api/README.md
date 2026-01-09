@@ -139,7 +139,7 @@ Enqueues a GitHub ingestion and metrics computation job.
 | `github_login` | No | GitHub login (lowercased/trimmed) |
 | `github_token` | Yes (or `X-GitHub-Token`) | OAuth token for ingestion and metrics |
 | `backfill_days` | No | Lookback window in days; `null` enables incremental mode |
-| `queue` | No | Celery queue selection; must be `default` or `bulk` (allowlisted), defaults to `default` when omitted, and can't access scheduled lanes (`daily`/`backfill`) |
+| `queue` | No | Celery queue selection; must be `default` or `bulk`, defaults to `default` when omitted |
 
 **Resolution precedence:**
 

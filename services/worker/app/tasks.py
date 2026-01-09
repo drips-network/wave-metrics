@@ -4,7 +4,6 @@ import time
 from celery import shared_task
 from sqlalchemy import text
 
-from services.shared import config as shared_config
 from services.shared.database import db_session
 from services.shared.github_client import fetch_user_login
 from services.shared.pipeline import ingest_and_compute_user
@@ -293,7 +292,31 @@ def sync_and_compute(self, user_id, token_ref, backfill_days=None, triggered_by=
 
         try:
             if requested_login:
-                viewer_login, _viewer = fetch_user_login(github_token)
+                try:
+                    viewer_login, _viewer = fetch_user_login(github_token)
+                except PermissionError:
+                    result = {
+                        "status": "token_invalid",
+                        "user_id": user_id,
+                        "user": requested_login,
+                        "error": "GitHub token unauthorized",
+                    }
+                    pipeline_status = "token_invalid"
+                    pipeline_error = result.get("error")
+                    _finalize_job_from_pipeline_result(
+                        job_id,
+                        task_id=task_id,
+                        user_id=user_id,
+                        task_name=task_name,
+                        result=result,
+                    )
+                    finalize_success = True
+                    logger.info(
+                        "sync_and_compute finished (token unauthorized)",
+                        extra={"celery_task_id": task_id, "job_id": job_id, "user_id": user_id},
+                    )
+                    return result
+
                 normalized_requested = str(requested_login).strip().lower()
                 normalized_viewer = str(viewer_login or "").strip().lower()
 
@@ -325,7 +348,6 @@ def sync_and_compute(self, user_id, token_ref, backfill_days=None, triggered_by=
                 backfill_days=backfill_days,
                 partition_key=None,
                 triggered_by=triggered_by or "api",
-                persist_github_token=shared_config.TOKEN_VAULT_ENABLED,
             )
 
             if isinstance(result, dict):
@@ -415,186 +437,3 @@ def sync_and_compute(self, user_id, token_ref, backfill_days=None, triggered_by=
         if finalize_exception is not None and primary_exception is None:
             raise finalize_exception
 
-
-@shared_task(bind=True, name="refresh_daily")
-def refresh_daily(self, user_id, partition_key=None, triggered_by=None):
-    """
-    Enqueue-safe daily refresh task using vault-sourced tokens
-
-    Args:
-        user_id (str): Internal user UUID
-        partition_key (str): Optional grouping key (e.g. 'daily:YYYY-MM-DD')
-        triggered_by (str): Optional origin label such as 'scheduler.daily'
-
-    Returns:
-        dict with summary of the run
-    """
-    started = time.monotonic()
-    task_id = getattr(getattr(self, "request", None), "id", None)
-    job_id = task_id
-    task_name = "refresh_daily"
-
-    result = None
-    pipeline_status = None
-    pipeline_error = None
-    sync_run_id = None
-    compute_run_id = None
-    baseline_id = None
-    window_start = None
-    window_end = None
-
-    logger.info(
-        "refresh_daily started",
-        extra={
-            "celery_task_id": task_id,
-            "job_id": job_id,
-            "user_id": user_id,
-            "partition_key": partition_key,
-            "triggered_by": triggered_by,
-        },
-    )
-
-    try:
-        _mark_job_running(job_id, task_id=task_id, user_id=user_id, task_name=task_name)
-        result = ingest_and_compute_user(
-            user_id=user_id,
-            github_token=None,
-            backfill_days=None,
-            partition_key=partition_key,
-            triggered_by=triggered_by,
-            persist_github_token=False,
-        )
-        if isinstance(result, dict):
-            pipeline_status = str(result.get("status") or "").strip().lower()
-            pipeline_error = result.get("error")
-            sync_run_id = result.get("sync_run_id")
-            compute_run_id = result.get("compute_run_id")
-            baseline_id = result.get("baseline_id")
-            window_start = result.get("window_start")
-            window_end = result.get("window_end")
-        _finalize_job_from_pipeline_result(
-            job_id,
-            task_id=task_id,
-            user_id=user_id,
-            task_name=task_name,
-            result=result,
-        )
-        return result
-    except Exception as exc:
-        _best_effort_mark_job_failed(job_id, task_id=task_id, user_id=user_id, task_name=task_name, error=exc)
-        raise
-    finally:
-        logger.info(
-            "refresh_daily finished",
-            extra={
-                "celery_task_id": task_id,
-                "job_id": job_id,
-                "user_id": user_id,
-                "github_login": (result or {}).get("user") if isinstance(result, dict) else None,
-                "task_name": task_name,
-                "triggered_by": triggered_by,
-                "partition_key": partition_key,
-                "backfill_days": None,
-                "pipeline_status": pipeline_status,
-                "pipeline_error": _truncate_error_message(pipeline_error) if pipeline_error else None,
-                "sync_run_id": sync_run_id,
-                "compute_run_id": compute_run_id,
-                "baseline_id": baseline_id,
-                "window_start": window_start,
-                "window_end": window_end,
-                "duration_seconds": round(time.monotonic() - started, 3),
-            },
-        )
-
-
-@shared_task(bind=True, name="backfill_user")
-def backfill_user(self, user_id, backfill_days, partition_key=None, triggered_by=None):
-    """
-    Enqueue-safe backfill task using vault-sourced tokens
-
-    Args:
-        user_id (str): Internal user UUID
-        backfill_days (int): Lookback days for ingestion window
-        partition_key (str): Optional grouping key for the campaign
-        triggered_by (str): Optional origin label such as 'scheduler.backfill'
-
-    Returns:
-        dict with summary of the run
-    """
-    started = time.monotonic()
-    task_id = getattr(getattr(self, "request", None), "id", None)
-    job_id = task_id
-    task_name = "backfill_user"
-
-    result = None
-    pipeline_status = None
-    pipeline_error = None
-    sync_run_id = None
-    compute_run_id = None
-    baseline_id = None
-    window_start = None
-    window_end = None
-
-    logger.info(
-        "backfill_user started",
-        extra={
-            "celery_task_id": task_id,
-            "job_id": job_id,
-            "user_id": user_id,
-            "backfill_days": backfill_days,
-            "partition_key": partition_key,
-            "triggered_by": triggered_by,
-        },
-    )
-
-    try:
-        _mark_job_running(job_id, task_id=task_id, user_id=user_id, task_name=task_name)
-        result = ingest_and_compute_user(
-            user_id=user_id,
-            github_token=None,
-            backfill_days=backfill_days,
-            partition_key=partition_key,
-            triggered_by=triggered_by,
-            persist_github_token=False,
-        )
-        if isinstance(result, dict):
-            pipeline_status = str(result.get("status") or "").strip().lower()
-            pipeline_error = result.get("error")
-            sync_run_id = result.get("sync_run_id")
-            compute_run_id = result.get("compute_run_id")
-            baseline_id = result.get("baseline_id")
-            window_start = result.get("window_start")
-            window_end = result.get("window_end")
-        _finalize_job_from_pipeline_result(
-            job_id,
-            task_id=task_id,
-            user_id=user_id,
-            task_name=task_name,
-            result=result,
-        )
-        return result
-    except Exception as exc:
-        _best_effort_mark_job_failed(job_id, task_id=task_id, user_id=user_id, task_name=task_name, error=exc)
-        raise
-    finally:
-        logger.info(
-            "backfill_user finished",
-            extra={
-                "celery_task_id": task_id,
-                "job_id": job_id,
-                "user_id": user_id,
-                "github_login": (result or {}).get("user") if isinstance(result, dict) else None,
-                "task_name": task_name,
-                "triggered_by": triggered_by,
-                "partition_key": partition_key,
-                "backfill_days": backfill_days,
-                "pipeline_status": pipeline_status,
-                "pipeline_error": _truncate_error_message(pipeline_error) if pipeline_error else None,
-                "sync_run_id": sync_run_id,
-                "compute_run_id": compute_run_id,
-                "baseline_id": baseline_id,
-                "window_start": window_start,
-                "window_end": window_end,
-                "duration_seconds": round(time.monotonic() - started, 3),
-            },
-        )

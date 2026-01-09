@@ -8,7 +8,6 @@ Core logic for GitHub ingestion, metrics computation, percentile lookup, and rat
     - [ingest\_user\_github\_activity](#ingest_user_github_activity)
     - [compute\_user\_metrics\_and\_language\_profile](#compute_user_metrics_and_language_profile)
     - [ingest\_and\_compute\_user](#ingest_and_compute_user)
-    - [user\_needs\_recompute](#user_needs_recompute)
   - [Guarantees](#guarantees)
     - [Data Integrity](#data-integrity)
     - [Computation Semantics](#computation-semantics)
@@ -17,7 +16,6 @@ Core logic for GitHub ingestion, metrics computation, percentile lookup, and rat
   - [Database Schema](#database-schema)
     - [Normalized Tables](#normalized-tables)
     - [Job Tracking](#job-tracking)
-    - [Token Storage](#token-storage)
     - [Serving Tables](#serving-tables)
     - [Population Tables](#population-tables)
     - [Views](#views)
@@ -33,10 +31,6 @@ Core logic for GitHub ingestion, metrics computation, percentile lookup, and rat
     - [Display Percentile](#display-percentile)
     - [Categorical Bins](#categorical-bins)
   - [Configuration](#configuration)
-  - [Usage from Orchestrators](#usage-from-orchestrators)
-    - [Incremental Daily Sync](#incremental-daily-sync)
-    - [Selective Recompute](#selective-recompute)
-    - [Partitioned Backfill](#partitioned-backfill)
 
 ## Module Overview
 
@@ -50,17 +44,14 @@ services/shared/
 ├── pipeline.py            # Ingestion and compute orchestration
 ├── github_client.py       # GitHub GraphQL API helpers
 ├── throttle.py            # Rate limit coordination via Redis
-├── metric_computations.py # Pure computation functions
 ├── metric_definitions.py  # Metric names, descriptions, invert flags
 ├── percentiles.py         # Baseline resolution, percentile lookup, bins
 ├── caching.py             # Redis cache helpers
 ├── diagnostics.py         # Parity/debug helpers (see diagnostics.md)
 ├── diagnostics.md         # How to run diagnostics tools
 ├── token_store.py         # Short-lived GitHub token references
-├── token_vault.py         # Persistent encrypted GitHub tokens (optional)
 ├── locks.py               # Per-user sync locking via Redis
 ├── login_aliases.py       # GitHub login alias confirmation
-└── users.py               # User enumeration for batch jobs
 ```
 
 ## Pipeline Functions
@@ -79,7 +70,7 @@ def ingest_user_github_activity(
     until=None,        # Explicit window end (datetime, UTC)
     backfill_days=None,# Lookback from now; ignored if since provided
     partition_key=None,# Orchestration label for run metadata
-    triggered_by=None, # Origin label: 'api', 'scheduler', 'manual'
+    triggered_by=None, # Origin label: 'api', 'api.bulk', 'wave', 'manual'
 ) -> dict
 ```
 
@@ -144,7 +135,6 @@ def ingest_and_compute_user(
     until=None,
     partition_key=None,
     triggered_by=None,
-    persist_github_token=False,
 ) -> dict
 ```
 
@@ -153,19 +143,6 @@ def ingest_and_compute_user(
 1. `ingest_user_github_activity()` → GitHub to normalized tables
 2. `compute_user_metrics_and_language_profile()` → serving tables
 3. `invalidate_metrics()` → clear Redis cache
-
-### user_needs_recompute
-
-Helper for batch jobs to detect stale metrics.
-
-```python
-def user_needs_recompute(session, user_id) -> bool
-```
-
-Returns `True` when:
-
-- `contributor_metrics` row missing, OR
-- `github_sync_state.last_pr_updated_at > contributor_metrics.computed_at`
 
 ## Guarantees
 
@@ -246,25 +223,12 @@ Returns `True` when:
 | `user_id` | UUID | Target user |
 | `github_login` | TEXT | GitHub login at enqueue time |
 | `backfill_days` | INTEGER | Optional lookback window |
-| `triggered_by` | TEXT | Origin label like `api`, `scheduler.daily`, `scheduler.backfill` |
-| `partition_key` | TEXT | Optional grouping key for scheduler ticks and backfill runs |
+| `triggered_by` | TEXT | Origin label like `api`, `api.bulk`, `wave`, `manual` |
+| `partition_key` | TEXT | Optional grouping key for campaign runs |
 | `status` | TEXT | PENDING, RUNNING, COMPLETED, FAILED, SKIPPED (terminal; did not run due to per-user lock) |
 | `error_message` | TEXT | Error details if failed (queryable prefix conventions like `missing_token`, `token_invalid`, `enqueue_failed`) |
 | `sync_run_id` | UUID | Linked github_sync_runs row |
 | `compute_run_id` | UUID | Linked metric_compute_runs row |
-
-### Token Storage
-
-**user_tokens:** Encrypted token storage for scheduled refresh capability
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `user_id` | UUID | FK to users (PK with provider) |
-| `provider` | TEXT | Token provider (e.g., "github") |
-| `encryption_key_id` | TEXT | Key ID used for encryption |
-| `ciphertext` | BYTEA | Encrypted token |
-| `token_fingerprint` | TEXT | SHA256 prefix for identification |
-| `invalidated_at` | TIMESTAMPTZ | When marked invalid |
 
 ### Serving Tables
 
@@ -417,72 +381,5 @@ This avoids claiming a "perfect" 100th percentile when percentiles are sampled a
 | `RUNNING_JOB_STALE_SECONDS` | `3600` | Mark RUNNING jobs stale after this |
 | `GITHUB_LOGIN_RESERVATION_TTL_SECONDS` | `86400` | TTL for unconfirmed login reservations |
 | `POPULATION_BASELINE_ID` | (empty) | Pins baseline selection |
-| `TOKEN_VAULT_KEYS_JSON` | (empty) | JSON object mapping key IDs to base64-encoded 32-byte keys |
-| `TOKEN_VAULT_ACTIVE_KEY_ID` | (empty) | Active key ID within `TOKEN_VAULT_KEYS_JSON` |
 
-## Usage from Orchestrators
-
-### Incremental Daily Sync
-
-```python
-from services.shared.pipeline import ingest_and_compute_user
-from services.shared.users import list_tracked_users
-
-for user_id in list_tracked_users():
-    result = ingest_and_compute_user(
-        user_id=str(user_id),
-        github_token=None,
-        backfill_days=None,
-        triggered_by="scheduler",
-    )
-    status = (result or {}).get("status")
-    if status == "missing_token":
-        print(f"No token for user {user_id}, skipping")
-    elif status == "token_invalid":
-        print(f"Invalid token for user {user_id}, skipping")
-    elif status == "locked":
-        print(f"User {user_id} locked, skipping")
-```
-
-### Selective Recompute
-
-```python
-from services.shared.pipeline import ingest_and_compute_user, user_needs_recompute
-from services.shared.database import db_session
-from services.shared.users import list_tracked_users
-
-with db_session() as session:
-    for user_id in list_tracked_users():
-        if not user_needs_recompute(session, user_id):
-            continue
-        result = ingest_and_compute_user(
-            user_id=str(user_id),
-            github_token=None,
-            triggered_by="scheduler",
-        )
-        status = (result or {}).get("status")
-        if status in {"missing_token", "token_invalid", "locked"}:
-            continue
-```
-
-### Partitioned Backfill
-
-```python
-from datetime import datetime, timedelta, timezone
-from services.shared.pipeline import ingest_and_compute_user
-
-# Example: processing a single day's partition
-partition_date = datetime(2025, 1, 15, tzinfo=timezone.utc)
-for user_id in user_ids_for_partition:
-    result = ingest_and_compute_user(
-        user_id=str(user_id),
-        github_token=None,
-        since=partition_date,
-        until=partition_date + timedelta(days=1),
-        partition_key="2025-01-15",
-        triggered_by="scheduler",
-    )
-    status = (result or {}).get("status")
-    if status in {"missing_token", "token_invalid", "locked"}:
-        continue
-```
+sddsfdsf

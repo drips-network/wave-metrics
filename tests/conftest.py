@@ -23,10 +23,6 @@ def _isolate_test_env(monkeypatch):
     monkeypatch.setattr("services.api.app.security.API_AUTH_TOKEN", "", raising=False)
     monkeypatch.setattr("services.shared.percentiles.POPULATION_BASELINE_ID", "", raising=False)
 
-    monkeypatch.setattr("services.shared.config.TOKEN_VAULT_KEYS_JSON", "", raising=False)
-    monkeypatch.setattr("services.shared.config.TOKEN_VAULT_ACTIVE_KEY_ID", "", raising=False)
-    monkeypatch.setattr("services.shared.config.TOKEN_VAULT_ENABLED", False, raising=False)
-
     test_key_b64 = base64.b64encode(b"\x00" * 32).decode("ascii")
     monkeypatch.setattr(
         "services.shared.config.TOKEN_REF_KEYS_JSON",

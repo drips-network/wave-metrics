@@ -6,7 +6,7 @@ UV ?= uv
 BASELINE_ID ?= 2025-09-30_v1
 CSV ?= ./population_data/output/population_cdfs.csv
 
-.PHONY: help dev-install compile-service-reqs compile-dev-reqs load-baseline verify-baseline up down logs fmt test test-e2e test-e2e-verbose migrate scheduler-daily scheduler-backfill
+.PHONY: help dev-install compile-service-reqs compile-dev-reqs load-baseline verify-baseline up down logs fmt test test-e2e test-e2e-verbose migrate
 
 help:
 	@echo "Targets:"
@@ -19,8 +19,6 @@ help:
 	@echo "  test                   Run test suite (uv run)"
 	@echo "  test-e2e               Run E2E tests (issues actual GitHub API requests)"
 	@echo "  migrate                Run DB migrations in the api container"
-	@echo "  scheduler-daily         Enqueue daily refresh jobs (docker)"
-	@echo "  scheduler-backfill      Enqueue backfill jobs (docker)"
 
 # Local Python dev (non-Docker)
 dev-install:
@@ -89,12 +87,3 @@ test-e2e-verbose:
 
 migrate:
 	$(COMPOSE) run --rm api python -c "from services.shared.database import apply_pending_migrations; apply_pending_migrations()"
-
-SCHEDULER_DAILY_ARGS ?=
-SCHEDULER_BACKFILL_ARGS ?=
-
-scheduler-daily:
-	$(COMPOSE) run --rm api python -m services.scheduler.app.main daily $(SCHEDULER_DAILY_ARGS)
-
-scheduler-backfill:
-	$(COMPOSE) run --rm api python -m services.scheduler.app.main backfill $(SCHEDULER_BACKFILL_ARGS)
