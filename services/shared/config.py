@@ -202,40 +202,6 @@ def validate_config():
         except Exception as exc:
             errors.append(f"TOKEN_REF_KEYS_JSON validation failed: {exc}")
 
-    if TOKEN_VAULT_KEYS_JSON or TOKEN_VAULT_ACTIVE_KEY_ID:
-        if not TOKEN_VAULT_KEYS_JSON:
-            errors.append("TOKEN_VAULT_ACTIVE_KEY_ID requires TOKEN_VAULT_KEYS_JSON")
-        if not TOKEN_VAULT_ACTIVE_KEY_ID:
-            errors.append("TOKEN_VAULT_KEYS_JSON requires TOKEN_VAULT_ACTIVE_KEY_ID")
-        if TOKEN_VAULT_KEYS_JSON and TOKEN_VAULT_ACTIVE_KEY_ID:
-            try:
-                import base64
-                import json
-
-                keyring = json.loads(TOKEN_VAULT_KEYS_JSON)
-                if not isinstance(keyring, dict):
-                    errors.append("TOKEN_VAULT_KEYS_JSON must be a JSON object mapping key IDs to base64 keys")
-                else:
-                    if TOKEN_VAULT_ACTIVE_KEY_ID not in keyring:
-                        errors.append(
-                            f"TOKEN_VAULT_ACTIVE_KEY_ID '{TOKEN_VAULT_ACTIVE_KEY_ID}' not in keyring"
-                        )
-                    for key_id, key_b64 in keyring.items():
-                        try:
-                            key_bytes = base64.b64decode(str(key_b64), validate=True)
-                        except Exception as exc:
-                            errors.append(f"Token vault key '{key_id}' is not valid base64: {exc}")
-                            continue
-
-                        if len(key_bytes) != 32:
-                            errors.append(
-                                f"Token vault key '{key_id}' must be 32 bytes (got {len(key_bytes)})"
-                            )
-            except json.JSONDecodeError as exc:
-                errors.append(f"TOKEN_VAULT_KEYS_JSON is not valid JSON: {exc}")
-            except Exception as exc:
-                errors.append(f"TOKEN_VAULT_KEYS_JSON validation failed: {exc}")
-
     if errors:
         raise ValueError("Invalid configuration: " + "; ".join(errors))
 
@@ -257,11 +223,6 @@ TOKEN_REF_KEYS_JSON = env_or("TOKEN_REF_KEYS_JSON", "")
 TOKEN_REF_ACTIVE_KEY_ID = env_or("TOKEN_REF_ACTIVE_KEY_ID", "")
 TOKEN_REF_TTL_SECONDS_NORMAL = int(env_or("TOKEN_REF_TTL_SECONDS_NORMAL", "900"))
 TOKEN_REF_TTL_SECONDS_BULK = int(env_or("TOKEN_REF_TTL_SECONDS_BULK", "86400"))
-
-# Token vault configuration
-TOKEN_VAULT_KEYS_JSON = env_or("TOKEN_VAULT_KEYS_JSON", "")
-TOKEN_VAULT_ACTIVE_KEY_ID = env_or("TOKEN_VAULT_ACTIVE_KEY_ID", "")
-TOKEN_VAULT_ENABLED = bool(TOKEN_VAULT_KEYS_JSON and TOKEN_VAULT_ACTIVE_KEY_ID)
 
 # DB pool knobs (optional; when unset, SQLAlchemy defaults apply)
 DB_POOL_SIZE = env_int_or_none("DB_POOL_SIZE")

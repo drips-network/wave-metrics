@@ -8,8 +8,6 @@ from services.shared.pipeline import (
     ingest_and_compute_user,
     ingest_user_github_activity,
 )
-from services.shared.users import list_tracked_users
-
 from services.shared import percentiles
 
 
@@ -101,24 +99,6 @@ def _insert_eligible_prs(user_id, count, state="MERGED"):
                     "url": f"https://example.com/pr/{10_000 + i}",
                 },
             )
-
-
-def test_list_tracked_users_reflects_inserted_users():
-    apply_pending_migrations()
-    _clear_tables()
-
-    user_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-    with db_session() as session:
-        session.execute(
-            text(
-                "INSERT INTO users(id, github_login, github_user_id, github_created_at, avatar_url)"
-                " VALUES (:id, 'login', 1, NOW(), '')"
-            ),
-            {"id": user_id},
-        )
-
-    users = list_tracked_users()
-    assert str(users[0]) == user_id
 
 
 def test_ingest_user_github_activity_updates_sync_state_and_metadata(monkeypatch):

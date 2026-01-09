@@ -11,8 +11,6 @@ from redis.exceptions import RedisError
 
 from services.shared.caching import invalidate_metrics
 from services.shared.config import REPO_LANGUAGE_CACHE_MAX_REPOS, USER_LOCK_TTL_SECONDS, USER_LOCK_WAIT_TIMEOUT_SECONDS
-from services.shared import config as shared_config
-from services.shared import token_vault
 from services.shared.locks import acquire_user_lock, release_user_lock
 from services.shared.database import ENGINE, db_session
 from services.shared.login_aliases import confirm_login_alias
@@ -555,7 +553,7 @@ def ingest_user_github_activity(
         until (datetime): Optional upper bound for PR updated_at (UTC); defaults to now when omitted
         backfill_days (int): Optional lookback window used when since is not provided
         partition_key (str): Optional partition label, e.g. '2025-01-01' or '2025-01'
-        triggered_by (str): Optional origin label, e.g. 'api', 'scheduler', 'manual'
+        triggered_by (str): Optional origin label, e.g. 'api', 'api.bulk', 'wave', 'manual'
 
     Returns:
         dict with keys:
@@ -872,7 +870,7 @@ def compute_user_metrics_and_language_profile(
         user_id (str): Internal user UUID
         github_token (str): OAuth token
         partition_key (str): Optional partition label
-        triggered_by (str): Optional origin label
+        triggered_by (str): Optional origin label, e.g. 'api', 'api.bulk', 'wave', 'manual'
 
     Returns:
         dict summary
@@ -1134,49 +1132,6 @@ def compute_user_metrics_and_language_profile(
     }
 
 
-def user_needs_recompute(session, user_id):
-    """
-    Determine whether serving metrics should be recomputed
-
-    Criteria:
-        - contributor_metrics row missing, OR
-        - github_sync_state.last_pr_updated_at > contributor_metrics.computed_at
-
-    Args:
-        session: DB session
-        user_id (str): User UUID
-
-    Returns:
-        bool
-    """
-    row = session.execute(
-        text("""
-            SELECT
-                cm.computed_at,
-                gss.last_pr_updated_at
-            FROM users u
-            LEFT JOIN contributor_metrics cm ON cm.user_id = u.id
-            LEFT JOIN github_sync_state gss ON gss.user_id = u.id
-            WHERE u.id = :user_id
-        """),
-        {"user_id": user_id},
-    ).fetchone()
-
-    if row is None:
-        return True
-
-    computed_at = row[0]
-    last_updated_at = row[1]
-
-    if computed_at is None:
-        return True
-
-    if last_updated_at is None:
-        return False
-
-    return last_updated_at > computed_at
-
-
 def ingest_and_compute_user(
     user_id,
     github_token=None,
@@ -1185,20 +1140,18 @@ def ingest_and_compute_user(
     until=None,
     partition_key=None,
     triggered_by=None,
-    persist_github_token=False,
 ) -> Dict[str, Any]:
     """
     Orchestrate ingestion from GitHub and compute metrics for a single user
 
     Args:
         user_id (str): Internal user UUID (optional when github_token is provided)
-        github_token (str): Optional OAuth token (when omitted, user_id is required and token resolves from token vault)
+        github_token (str): OAuth token for GitHub API access
         backfill_days (int): Optional lookback window (default METRICS_WINDOW_DAYS for new users)
         since (datetime): Optional explicit window start
         until (datetime): Optional explicit window end
         partition_key (str): Optional partition label
-        triggered_by (str): Optional origin label
-        persist_github_token (bool): When true, persist github_token to the token vault when enabled
+        triggered_by (str): Optional origin label, e.g. 'api', 'api.bulk', 'wave', 'manual'
 
     Returns:
         dict summary
@@ -1210,61 +1163,23 @@ def ingest_and_compute_user(
             status='locked' when another sync is already running for the user
 
         Missing token:
-            status='missing_token' when no token is provided and none is stored
+            status='missing_token' when no github_token is provided
 
         Invalid token:
-            status='token_invalid' when a vault-sourced token is invalidated or returns 401
+            status='token_invalid' when GitHub returns 401 for the provided token
+            user_id may be None when the caller omitted it and the login cannot be resolved
+            user may be None when the login cannot be determined
     """
-    token_resolved_from_vault = False
-
     if not github_token:
         if not user_id:
             raise ValueError("user_id is required when github_token is not provided")
         user_id = _require_uuid_string(user_id, "user_id")
-
-        if not shared_config.TOKEN_VAULT_ENABLED:
-            with db_session() as session:
-                row = session.execute(
-                    text("SELECT github_login FROM users WHERE id = :u"),
-                    {"u": user_id},
-                ).fetchone()
-            github_login = str(row[0]) if row else None
-            return {
-                "status": "missing_token",
-                "user_id": user_id,
-                "user": github_login,
-                "error": "Token vault not enabled and no token provided",
-            }
-
-        with db_session() as session:
-            try:
-                github_token = token_vault.get_github_token(session, user_id)
-                token_resolved_from_vault = True
-            except ValueError as exc:
-                row = session.execute(
-                    text("SELECT github_login FROM users WHERE id = :u"),
-                    {"u": user_id},
-                ).fetchone()
-                github_login = str(row[0]) if row else None
-                error_msg = str(exc)
-                logger.info(
-                    "Token vault lookup failed: user_id=%s error=%s",
-                    user_id,
-                    error_msg,
-                )
-                if error_msg.lower().startswith("github token is invalidated"):
-                    return {
-                        "status": "token_invalid",
-                        "user_id": user_id,
-                        "user": github_login,
-                        "error": error_msg,
-                    }
-                return {
-                    "status": "missing_token",
-                    "user_id": user_id,
-                    "user": github_login,
-                    "error": error_msg,
-                }
+        return {
+            "status": "missing_token",
+            "user_id": user_id,
+            "user": None,
+            "error": "github_token is required",
+        }
     else:
         user_id = _validate_uuid_string(user_id, "user_id")
 
@@ -1276,28 +1191,27 @@ def ingest_and_compute_user(
     try:
         login, viewer = fetch_user_login(github_token)
     except PermissionError:
-        if token_resolved_from_vault:
-            with db_session() as session:
-                try:
-                    token_vault.mark_github_token_invalid(session, user_id, reason="401 unauthorized")
-                except ValueError as exc:
-                    logger.warning(
-                        "Failed to mark token invalid after 401: user_id=%s error=%s",
-                        user_id,
-                        str(exc),
-                    )
-                row = session.execute(
-                    text("SELECT github_login FROM users WHERE id = :u"),
-                    {"u": user_id},
-                ).fetchone()
-            github_login = str(row[0]) if row else None
-            return {
-                "status": "token_invalid",
-                "user_id": user_id,
-                "user": github_login,
-                "error": "GitHub token unauthorized",
-            }
-        raise
+        best_known_login = None
+        if user_id:
+            try:
+                with db_session() as session:
+                    row = session.execute(
+                        text("SELECT github_login FROM users WHERE id = :u"),
+                        {"u": user_id},
+                    ).fetchone()
+                if row and row[0]:
+                    best_known_login = str(row[0])
+            except SQLAlchemyError as exc:
+                logger.warning(
+                    "ingest_and_compute_user failed to lookup login after token invalid",
+                    extra={"user_id": user_id, "error": type(exc).__name__},
+                )
+        return {
+            "status": "token_invalid",
+            "user_id": user_id,
+            "user": best_known_login,
+            "error": "GitHub token unauthorized",
+        }
 
     with db_session() as session:
         internal_user_id = _ensure_user(
@@ -1309,24 +1223,6 @@ def ingest_and_compute_user(
             viewer.get("avatarUrl"),
         )
         confirm_login_alias(session, login, internal_user_id, viewer.get("databaseId"))
-
-        if token_resolved_from_vault and shared_config.TOKEN_VAULT_ENABLED:
-            token_vault.upsert_github_token(
-                session,
-                internal_user_id,
-                github_token,
-                verified_at=datetime.now(timezone.utc),
-                stored_by=triggered_by,
-            )
-
-        if persist_github_token and shared_config.TOKEN_VAULT_ENABLED:
-            token_vault.upsert_github_token(
-                session,
-                internal_user_id,
-                github_token,
-                verified_at=datetime.now(timezone.utc),
-                stored_by=triggered_by,
-            )
 
     lock_value = None
     try:
@@ -1367,24 +1263,12 @@ def ingest_and_compute_user(
                 triggered_by=triggered_by,
             )
         except PermissionError:
-            if token_resolved_from_vault:
-                with db_session() as session:
-                    try:
-                        token_vault.mark_github_token_invalid(session, internal_user_id, reason="401 unauthorized")
-                    except ValueError as exc:
-                        logger.warning(
-                            "Failed to mark token invalid after 401: user_id=%s error=%s",
-                            internal_user_id,
-                            str(exc),
-                        )
-
-                return {
-                    "status": "token_invalid",
-                    "user_id": internal_user_id,
-                    "user": login,
-                    "error": "GitHub token unauthorized",
-                }
-            raise
+            return {
+                "status": "token_invalid",
+                "user_id": internal_user_id,
+                "user": login,
+                "error": "GitHub token unauthorized",
+            }
 
         invalidate_metrics(internal_user_id)
 

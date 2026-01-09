@@ -29,7 +29,7 @@ def create_celery():
         backend=REDIS_URL,
         include=["services.worker.app.tasks"],
     )
-    # Default queue is "default"; task_routes send daily/backfill to dedicated queues
+    # Default queue is "default" and bulk routing is explicit
     app.conf.task_default_queue = CELERY_DEFAULT_QUEUE
 
     app.conf.task_queues = tuple(Queue(name) for name in CELERY_QUEUE_NAMES)

@@ -106,6 +106,30 @@ def test_sync_token_only_returns_canonical_ids_expected(monkeypatch):
         assert alias_row[3] is None
 
 
+def test_sync_token_only_unauthorized_returns_400_expected(monkeypatch):
+    _ensure_schema()
+    _clear_tables()
+
+    def _fake_fetch_user_login(_token):
+        raise PermissionError("unauthorized")
+
+    def _fake_send_task(*_args, **_kwargs):
+        raise AssertionError("send_task should not be called for unauthorized token")
+
+    def _fake_create_token_ref(_session, _user_id, _token, ttl_seconds=None):
+        _ = ttl_seconds
+        raise AssertionError("create_github_token_ref should not be called for unauthorized token")
+
+    monkeypatch.setattr(api_main, "fetch_user_login", _fake_fetch_user_login)
+    monkeypatch.setattr(api_main.celery_client, "send_task", _fake_send_task)
+    monkeypatch.setattr(api_main, "create_github_token_ref", _fake_create_token_ref)
+
+    client = TestClient(app)
+    resp = client.post("/api/v1/sync", json={"github_token": "dummy"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "github_token unauthorized"
+
+
 def test_sync_login_only_does_not_call_github_expected(monkeypatch):
     _ensure_schema()
     _clear_tables()

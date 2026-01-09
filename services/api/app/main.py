@@ -460,7 +460,10 @@ def _resolve_sync_user_identity(body: SyncRequest, github_token: str, session) -
 
         return str(alias_row[0]), requested_login
 
-    raw_login, viewer = fetch_user_login(github_token)
+    try:
+        raw_login, viewer = fetch_user_login(github_token)
+    except PermissionError:
+        raise HTTPException(status_code=400, detail="github_token unauthorized")
     viewer_login = _normalize_github_login(raw_login)
     if not viewer_login:
         raise HTTPException(status_code=502, detail="Failed to resolve GitHub login")

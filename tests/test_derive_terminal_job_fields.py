@@ -21,10 +21,10 @@ def test_derive_locked_status_returns_skipped_expected():
 
 def test_derive_missing_token_status_returns_failed_with_error_expected():
     status, error_message = _derive_terminal_job_fields_from_pipeline_result(
-        {"status": "missing_token", "error": "Token vault not enabled"}
+        {"status": "missing_token", "error": "github_token is required"}
     )
     assert status == "FAILED"
-    assert "token vault" in str(error_message or "").lower()
+    assert "github_token is required" in str(error_message or "").lower()
 
 
 def test_derive_token_invalid_status_returns_failed_with_error_expected():

@@ -17,14 +17,12 @@ def test_sync_and_compute_celery_wrapper_delegates_to_pipeline(monkeypatch):
         until=None,
         partition_key=None,
         triggered_by=None,
-        persist_github_token=False,
     ):
         captured["user_id"] = user_id
         captured["github_token"] = github_token
         captured["backfill_days"] = backfill_days
         captured["partition_key"] = partition_key
         captured["triggered_by"] = triggered_by
-        captured["persist_github_token"] = persist_github_token
         return {"status": "ok", "user_id": user_id}
 
     monkeypatch.setattr("services.worker.app.tasks.ingest_and_compute_user", _fake_ingest_and_compute_user)
@@ -66,7 +64,6 @@ def test_sync_and_compute_celery_wrapper_delegates_to_pipeline(monkeypatch):
     assert captured["backfill_days"] == 30
     assert captured["partition_key"] is None
     assert captured["triggered_by"] == "api"
-    assert captured["persist_github_token"] is False
 
     assert lease_called["token_ref"] == "token-ref-xyz"
     assert lease_called["expected_user_id"] == "user-123"

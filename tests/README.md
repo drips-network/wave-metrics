@@ -45,15 +45,12 @@ Pure function tests requiring no external services.
 |------|-----------|----------|
 | Percentile logic | `test_percentiles.py` | Lookup, inversion, clamping, binning |
 | Baseline resolution | `test_baseline_resolution.py` | Baseline selection priority |
-| Metric computations | `test_metric_computations.py` | Hours deltas, merge rate, language weighting |
 | API schemas | `test_api_schemas.py` | Request defaults and validation |
 | Config validation | `test_config_validation.py` | Environment variable validation |
 | Pipeline window | `test_pipeline_window_resolution.py` | Window resolution logic |
 | Pipeline LRU cache | `test_pipeline_lru_cache.py` | Language cache behavior |
-| Recompute detection | `test_user_needs_recompute.py` | Stale metrics detection |
 | User locking | `test_user_lock.py`, `test_pipeline_user_lock.py` | Per-user sync lock |
 | Token store | `test_token_store.py` | Token reference management |
-| Token vault | `test_token_vault.py` | Encrypted token storage |
 | Throttle semaphore | `test_throttle_semaphore.py` | Rate limit semaphore |
 | GitHub client | `test_github_client_graphql_retry.py` | GraphQL retry logic |
 | Worker job status mapping | `test_derive_terminal_job_fields.py` | Pipeline result → terminal job status |
@@ -193,9 +190,6 @@ Some modules read from environment at import time. The `conftest.py` autouse fix
 
 - `API_AUTH_TOKEN`
 - `POPULATION_BASELINE_ID`
-- `TOKEN_VAULT_KEYS_JSON`
-- `TOKEN_VAULT_ACTIVE_KEY_ID`
-- `TOKEN_VAULT_ENABLED`
 
 ## Mocking Patterns
 

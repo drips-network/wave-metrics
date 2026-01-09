@@ -8,8 +8,6 @@ For pipeline details, see [`services/shared/README.md`](../shared/README.md).
   - [Architecture](#architecture)
   - [Queues](#queues)
   - [Task: sync\_and\_compute](#task-sync_and_compute)
-  - [Task: refresh\_daily](#task-refresh_daily)
-  - [Task: backfill\_user](#task-backfill_user)
   - [Task Contract](#task-contract)
     - [Invariants](#invariants)
     - [Celery Settings](#celery-settings)
@@ -22,7 +20,6 @@ For pipeline details, see [`services/shared/README.md`](../shared/README.md).
     - [Required](#required)
     - [Token Refs](#token-refs)
     - [GitHub Throttling](#github-throttling)
-    - [Token Vault](#token-vault)
     - [Operational](#operational)
   - [Scaling](#scaling)
     - [Horizontal Scaling](#horizontal-scaling)
@@ -53,16 +50,14 @@ For pipeline details, see [`services/shared/README.md`](../shared/README.md).
 
 ## Queues
 
-Worker traffic is separated into dedicated queues so backfills and daily refreshes can't starve API-triggered syncs.
+Worker traffic can be split between `default` and `bulk` queues so large refreshes do not starve API-triggered syncs.
 
-API-triggered syncs can also be routed to the `bulk` queue via `/api/v1/sync` request body `queue="bulk"`.
+API-triggered syncs can be routed to the `bulk` queue via `/api/v1/sync` request body `queue="bulk"`.
 
 | Queue | Purpose | Tasks |
 |-------|---------|-------|
 | `default` | API-triggered syncs | `sync_and_compute` |
 | `bulk` | Bulk API-triggered syncs | `sync_and_compute` |
-| `daily` | Scheduled incremental refreshes | `refresh_daily` |
-| `backfill` | Operator-driven backfills | `backfill_user` |
 
 ## Task: sync_and_compute
 
@@ -116,44 +111,6 @@ If another sync is already running for the same user, the task returns:
 9. Invalidate Redis cache (`metrics:{user_id}`)
 10. Record completion in run metadata tables
 
-## Task: refresh_daily
-
-Vault-based scheduled task that runs without a `token_ref`.
-
-**Signature:**
-
-```python
-refresh_daily(user_id, partition_key=None, triggered_by=None)
-```
-
-| Argument | Type | Description |
-|----------|------|-------------|
-| `user_id` | str | Internal user UUID |
-| `partition_key` | str/null | Grouping key for a scheduler tick (e.g. `daily:YYYY-MM-DD`) |
-| `triggered_by` | str/null | Origin label like `scheduler.daily` |
-
-**Notes:**
-
-- Requires token vault to be enabled and a token to be stored for the user
-- Updates `sync_jobs` to a terminal status (`COMPLETED`, `FAILED`, or `SKIPPED`) based on the pipeline result
-
-## Task: backfill_user
-
-Vault-based scheduled task for targeted backfills.
-
-**Signature:**
-
-```python
-backfill_user(user_id, backfill_days, partition_key=None, triggered_by=None)
-```
-
-| Argument | Type | Description |
-|----------|------|-------------|
-| `user_id` | str | Internal user UUID |
-| `backfill_days` | int | Lookback window in days |
-| `partition_key` | str/null | Grouping key (used in `sync_jobs` and run metadata) for a backfill |
-| `triggered_by` | str/null | Origin label like `scheduler.backfill` |
-
 ## Task Contract
 
 ### Invariants
@@ -178,7 +135,7 @@ backfill_user(user_id, backfill_days, partition_key=None, triggered_by=None)
 | `backend` | Redis | Results available via AsyncResult |
 | `task_default_queue` | `default` | Default queue for tasks; workers should consume the queues they serve (e.g. `-Q default`) |
 | `acks_late` | `True` | Task acknowledged on completion; worker crash triggers redelivery |
-| `task_routes` | (configured) | Routes `sync_and_compute`→`default`, `refresh_daily`→`daily`, `backfill_user`→`backfill` |
+| `task_routes` | (configured) | Routes `sync_and_compute`→`default` |
 
 ## Login Mismatch
 
@@ -253,13 +210,6 @@ Ingestion flushes and commits in batches via `db_session()`, so failures mid-run
 | `GH_SEMAPHORE_ACQUIRE_TIMEOUT_SECONDS` | `60` | Max wait for semaphore |
 | `GH_COOLDOWN_MAX_WAIT_SECONDS` | `600` | Cap on cooldown waits |
 
-### Token Vault
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TOKEN_VAULT_KEYS_JSON` | (empty) | Enables encrypted token storage |
-| `TOKEN_VAULT_ACTIVE_KEY_ID` | (empty) | Active encryption key ID |
-
 ### Operational
 
 | Variable | Value | Description |
@@ -330,8 +280,7 @@ Consequences:
 ```bash
 # Queue depth
 redis-cli LLEN default
-redis-cli LLEN daily
-redis-cli LLEN backfill
+redis-cli LLEN bulk
 
 # Active tasks
 celery -A services.worker.app.main:celery_app inspect active
@@ -372,8 +321,7 @@ make up
 
 # Watch worker logs
 docker compose logs -f worker
-docker compose logs -f worker_daily
-docker compose logs -f worker_backfill
+docker compose logs -f worker_bulk
 
 # Trigger sync
 curl -X POST http://localhost:8000/api/v1/sync \

@@ -87,31 +87,6 @@ ON sync_jobs (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_jobs_triggered_partition_created_at
 ON sync_jobs (triggered_by, partition_key, created_at DESC);
 
--- Encrypted token storage for scheduled refresh capability
-CREATE TABLE IF NOT EXISTS user_tokens (
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    provider TEXT NOT NULL,
-    encryption_key_id TEXT NOT NULL,
-    encryption_alg TEXT NOT NULL,
-    nonce BYTEA NOT NULL,
-    ciphertext BYTEA NOT NULL,
-    token_fingerprint TEXT NOT NULL,
-    stored_by TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_used_at TIMESTAMPTZ,
-    last_verified_at TIMESTAMPTZ,
-    invalidated_at TIMESTAMPTZ,
-    invalidated_reason TEXT,
-    PRIMARY KEY (user_id, provider)
-);
-
-CREATE INDEX IF NOT EXISTS idx_user_tokens_provider_last_used_at
-ON user_tokens (provider, last_used_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_user_tokens_provider_invalidated_at
-ON user_tokens (provider, invalidated_at);
-
 -- Repositories
 CREATE TABLE IF NOT EXISTS repositories (
     id BIGSERIAL PRIMARY KEY,
@@ -287,3 +262,6 @@ CREATE TABLE IF NOT EXISTS github_sync_state (
     last_pr_updated_at TIMESTAMPTZ,
     PRIMARY KEY (user_id)
 );
+
+-- Cleanup legacy tables
+DROP TABLE IF EXISTS user_tokens;
