@@ -1,7 +1,7 @@
 """Caching helpers for contributor metrics.
 
 Key pattern:
-    metrics:{user_id}
+    metrics:v{version}:{user_id}
 """
 
 import json
@@ -12,6 +12,8 @@ import redis
 from redis import Redis
 
 from .config import REDIS_URL, CACHE_TTL_SECONDS
+
+METRICS_CACHE_KEY_VERSION = 2
 
 _redis: Optional[Redis] = None
 logger = logging.getLogger("caching")
@@ -31,6 +33,19 @@ def get_redis() -> Redis:
     if _redis is None:
         _redis = redis.Redis.from_url(REDIS_URL)
     return _redis
+
+
+def metrics_cache_key(user_id) -> str:
+    """
+    Build the metrics cache key
+
+    Args:
+        user_id (str): UUID
+
+    Returns:
+        str
+    """
+    return f"metrics:v{METRICS_CACHE_KEY_VERSION}:{user_id}"
 
 
 def get_cached_metrics(key) -> Optional[Dict[str, Any]]:
@@ -91,7 +106,7 @@ def invalidate_metrics(user_id) -> None:
     """
     try:
         client = get_redis()
-        client.delete(f"metrics:{user_id}")
+        client.delete(metrics_cache_key(user_id))
     except Exception as exc:
         logger.warning("invalidate_metrics redis error=%s", type(exc).__name__)
         return

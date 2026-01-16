@@ -958,39 +958,36 @@ def compute_user_metrics_and_language_profile(
 
             if total_opened_prs > 0:
                 raw = lookup_raw_percentile(session, baseline_id, "total_opened_prs", total_opened_prs)
-                percentiles["total_opened_prs_percentile"] = to_display_percentile("total_opened_prs", raw)
+                percentiles["total_opened_prs_percentile"] = to_display_percentile(raw)
 
                 raw = lookup_raw_percentile(session, baseline_id, "total_merged_prs", total_merged_prs)
-                percentiles["total_merged_prs_percentile"] = to_display_percentile("total_merged_prs", raw)
+                percentiles["total_merged_prs_percentile"] = to_display_percentile(raw)
 
                 if total_opened_prs >= 20 and pr_merge_rate is not None:
                     raw = lookup_raw_percentile(session, baseline_id, "pr_merge_rate", pr_merge_rate)
-                    percentiles["pr_merge_rate_percentile"] = to_display_percentile("pr_merge_rate", raw)
+                    percentiles["pr_merge_rate_percentile"] = to_display_percentile(raw)
 
                 if total_opened_prs_non_draft >= 20 and pr_drop_rate is not None:
                     raw = lookup_raw_percentile(session, baseline_id, "pr_drop_rate", pr_drop_rate)
-                    percentiles["pr_drop_rate_percentile"] = to_display_percentile("pr_drop_rate", raw)
+                    percentiles["pr_drop_rate_percentile"] = to_display_percentile(raw)
 
                 if total_merged_prs >= 20 and avg_merge_latency_hours is not None:
                     raw = lookup_raw_percentile(session, baseline_id, "avg_merge_latency_hours",
                                                 avg_merge_latency_hours)
-                    percentiles["avg_merge_latency_hours_percentile"] = to_display_percentile(
-                        "avg_merge_latency_hours",
-                        raw,
-                    )
+                    percentiles["avg_merge_latency_hours_percentile"] = to_display_percentile(raw)
 
                 if oss_activity_total >= 10:
                     p_prs = lookup_raw_percentile(session, baseline_id, "oss_prs_opened", oss_prs_opened)
                     p_reviews = lookup_raw_percentile(session, baseline_id, "oss_reviews", oss_reviews)
                     p_issues = lookup_raw_percentile(session, baseline_id, "oss_issues_opened", oss_issues_opened)
 
-                    percentiles["oss_prs_opened_percentile"] = to_display_percentile("oss_prs_opened", p_prs)
-                    percentiles["oss_reviews_percentile"] = to_display_percentile("oss_reviews", p_reviews)
-                    percentiles["oss_issues_opened_percentile"] = to_display_percentile("oss_issues_opened", p_issues)
+                    percentiles["oss_prs_opened_percentile"] = to_display_percentile(p_prs)
+                    percentiles["oss_reviews_percentile"] = to_display_percentile(p_reviews)
+                    percentiles["oss_issues_opened_percentile"] = to_display_percentile(p_issues)
 
                     oss_composite_raw = compute_oss_composite_raw(p_reviews, p_prs, p_issues)
                     raw = lookup_raw_percentile(session, baseline_id, "oss_composite", oss_composite_raw)
-                    percentiles["oss_composite_percentile"] = to_display_percentile("oss_composite", raw)
+                    percentiles["oss_composite_percentile"] = to_display_percentile(raw)
 
             session.execute(
                 text(

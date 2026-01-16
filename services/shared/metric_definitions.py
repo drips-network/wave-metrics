@@ -1,11 +1,11 @@
 """
-Metric definitions: keys, descriptions, gating thresholds, invert flags
+Metric definitions: keys, descriptions, gating thresholds, direction flags
 
 Single source of truth for the 9 spec metrics
 """
 
-# Metrics where lower is better (raw percentile inverted before display)
-INVERT_METRICS = frozenset({"pr_drop_rate", "avg_merge_latency_hours"})
+# Metrics where lower is better
+LOWER_IS_BETTER_METRICS = frozenset({"pr_drop_rate", "avg_merge_latency_hours"})
 
 METRIC_DEFINITIONS = {
     "total_opened_prs": {
@@ -37,6 +37,18 @@ METRIC_DEFINITIONS = {
     },
 }
 
+
+def is_metric_lower_is_better(metric_name):
+    """
+    Check whether lower values are better for this metric
+
+    Args:
+        metric_name (str): Metric key
+
+    Returns:
+        bool
+    """
+    return metric_name in LOWER_IS_BETTER_METRICS
 
 def get_metric_description(metric_name):
     """

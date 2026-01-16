@@ -131,7 +131,7 @@ def test_metrics_endpoint_uses_single_cache_key(monkeypatch):
     resp2 = client.get("/api/v1/metrics", params={"user_id": user_id})
     assert resp2.status_code == 200
 
-    key = f"metrics:{user_id}"
+    key = caching_module.metrics_cache_key(user_id)
     assert fake.get(key) is not None
 
 
@@ -181,7 +181,9 @@ def test_metrics_by_login_populates_metrics_cache_key_expected(monkeypatch):
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["user_id"] == user_id
+    assert payload["metrics"]["pr_drop_rate"]["lower_is_better"] is True
+    assert payload["metrics"]["total_opened_prs"]["lower_is_better"] is False
 
-    key = f"metrics:{user_id}"
+    key = caching_module.metrics_cache_key(user_id)
     assert fake.get(key) is not None
 

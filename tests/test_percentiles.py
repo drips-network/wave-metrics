@@ -37,14 +37,12 @@ def test_lookup_raw_percentile_returns_max_percentile_match():
 
 
 def test_to_display_percentile_none_passthrough():
-    assert to_display_percentile("total_opened_prs", None) is None
+    assert to_display_percentile(None) is None
 
 
-def test_to_display_percentile_inverts_before_clamp():
-    # Invert metric: raw 0 => display 100 => clamp to 99.9 (proves clamp after inversion)
-    assert to_display_percentile("pr_drop_rate", 0.0) == 99.9
-    # Invert metric: raw 100 => display 0 => clamp stays 0
-    assert to_display_percentile("pr_drop_rate", 100.0) == 0.0
+def test_to_display_percentile_clamps_only():
+    assert to_display_percentile(0.0) == 0.0
+    assert to_display_percentile(100.0) == 99.9
 
 
 def test_percentile_bin_boundaries():
@@ -58,8 +56,8 @@ def test_percentile_bin_boundaries():
     assert percentile_bin(89.9) == "High"
     assert percentile_bin(90.0) == "Very High"
     assert percentile_bin(98.9) == "Very High"
-    assert percentile_bin(99.0) == "Exceptional"
-    assert percentile_bin(99.9) == "Exceptional"
+    assert percentile_bin(99.0) == "Extremely High"
+    assert percentile_bin(99.9) == "Extremely High"
 
 
 def test_compute_oss_composite_raw():

@@ -32,7 +32,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@postgres:5432/wave-metrics}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+      SERVICE_VERSION: ${SERVICE_VERSION:-0.2.0}
       RUN_DB_MIGRATIONS: ${RUN_DB_MIGRATIONS:-1}
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-180}
       GH_MAX_RETRIES: ${GH_MAX_RETRIES:-2}

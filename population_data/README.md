@@ -134,7 +134,7 @@ The pipeline handles multi-year ranges automatically, switching between daily ta
 
 ## Output Schema
 
-The `population_cdfs` table stores **percentile thresholds** (quantiles) sampled at 0.1% granularity. Each row maps a percentile rank to the metric value at that threshold; at query time, a reverse lookup determines a contributor's percentile rank for a given metric value.
+The `population_cdfs` table stores **percentile thresholds** (quantiles) sampled at 0.1% granularity. Each row maps a percentile rank to the metric value at that threshold; at query time, we compute `raw_percentile = MAX(percentile) WHERE threshold_value <= value` for the contributor's metric value.
 
 | Column | Type | Description |
 |--------|------|-------------|

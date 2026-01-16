@@ -43,7 +43,7 @@ Pure function tests requiring no external services.
 
 | Area | Test File | Coverage |
 |------|-----------|----------|
-| Percentile logic | `test_percentiles.py` | Lookup, inversion, clamping, binning |
+| Percentile logic | `test_percentiles.py` | Lookup, clamping, binning |
 | Baseline resolution | `test_baseline_resolution.py` | Baseline selection priority |
 | API schemas | `test_api_schemas.py` | Request defaults and validation |
 | Config validation | `test_config_validation.py` | Environment variable validation |

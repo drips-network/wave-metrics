@@ -60,7 +60,7 @@ Returns `"degraded"` when any dependency (including broker, when enabled) is unr
 ### GET /version
 
 ```json
-{"version": "0.1.0"}
+{"version": "0.2.0"}
 ```
 
 ### GET /api/v1/metrics
@@ -82,15 +82,29 @@ Retrieves precomputed metrics for a contributor.
   "metrics_window_end": "2025-12-16T00:00:00Z",
   "metrics_baseline_dates": {"start": "2022-10-01", "end": "2025-09-30"},
   "metrics": {
-    "total_opened_prs": {"value": 408, "percentile": 97.2, "bin": "Very High", "description": "..."},
-    "oss_composite": {"value": 93.2, "percentile": 95.7, "bin": "Very High", "description": "..."}
+    "total_opened_prs": {
+      "value": 408,
+      "percentile": 97.2,
+      "bin": "Very High",
+      "lower_is_better": false,
+      "description": "..."
+    },
+    "oss_composite": {
+      "value": 93.2,
+      "percentile": 95.7,
+      "bin": "Very High",
+      "lower_is_better": false,
+      "description": "..."
+    }
   },
   "lifetime_language_profile": [{"language": "Python", "pct": 48.3}],
   "computed_at": "2025-12-16T14:30:00Z"
 }
 ```
 
-Percentiles may be `null` when gated by threshold rules (e.g., `pr_merge_rate` requires ≥20 PRs).
+Percentiles may be `null` when gated by threshold rules (e.g., `pr_merge_rate` requires ≥20 PRs). Percentiles
+represent the raw percentile rank of the raw value against the population CDF; metrics with
+`lower_is_better=true` should be interpreted by clients as needed.
 
 **Errors:**
 
@@ -253,7 +267,7 @@ Exception: `GET /api/v1/jobs/{job_id}` is always unauthenticated.
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgresql+psycopg2://...localhost:5432/wave-metrics` | Postgres connection |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis for cache and Celery |
-| `SERVICE_VERSION` | `0.1.0` | Reported by `/version` |
+| `SERVICE_VERSION` | `0.2.0` | Reported by `/version` |
 | `PORT` | `8000` | HTTP server port |
 | `API_BIND_HOST` | `0.0.0.0` | Bind host when starting the API via `python -m services.api.app.main` (Docker deploys use Gunicorn binds in `services/api/Dockerfile`) |
 | `RUN_DB_MIGRATIONS` | `1` | Run migrations on startup |

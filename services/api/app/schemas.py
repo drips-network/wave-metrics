@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 
 _YYYY_MM_DD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _GITHUB_LOGIN_RE = re.compile(r"^[a-z0-9-]{1,39}$")
-_METRIC_BIN = Literal["Very Low", "Low", "Medium", "High", "Very High", "Exceptional"]
+_METRIC_BIN = Literal["Very Low", "Low", "Medium", "High", "Very High", "Extremely High"]
 
 
 class BaselineDates(BaseModel):
@@ -25,6 +25,7 @@ class MetricEntry(BaseModel):
     value: Optional[Union[int, float]] = None
     percentile: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     bin: Optional[_METRIC_BIN] = None
+    lower_is_better: bool = False
     description: str
 
 

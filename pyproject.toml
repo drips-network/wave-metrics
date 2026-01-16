@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wave-metrics"
-version = "0.1.0"
+version = "0.2.0"
 description = "Metrics service for Drips Wave using GitHub API and GitHub Archive data sources"
 requires-python = ">=3.11,<3.13"
 authors = [

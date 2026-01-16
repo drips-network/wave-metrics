@@ -212,7 +212,7 @@ DATABASE_URL = _normalize_local_service_url(_RAW_DATABASE_URL, docker_hostname="
 _RAW_REDIS_URL = env_or("REDIS_URL", "redis://localhost:6379/0")
 REDIS_URL = _normalize_local_service_url(_RAW_REDIS_URL, docker_hostname="redis")
 
-SERVICE_VERSION = env_or("SERVICE_VERSION", "0.1.0")
+SERVICE_VERSION = env_or("SERVICE_VERSION", "0.2.0")
 RUN_DB_MIGRATIONS = env_or("RUN_DB_MIGRATIONS", "1") == "1"
 CACHE_TTL_SECONDS = int(env_or("CACHE_TTL_SECONDS", "180"))
 API_AUTH_TOKEN = env_or("API_AUTH_TOKEN", "")
