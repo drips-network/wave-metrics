@@ -44,7 +44,7 @@ services/shared/
 ├── pipeline.py            # Ingestion and compute orchestration
 ├── github_client.py       # GitHub GraphQL API helpers
 ├── throttle.py            # Rate limit coordination via Redis
-├── metric_definitions.py  # Metric names, descriptions, invert flags
+├── metric_definitions.py  # Metric names, descriptions, direction flags
 ├── percentiles.py         # Baseline resolution, percentile lookup, bins
 ├── caching.py             # Redis cache helpers
 ├── diagnostics.py         # Parity/debug helpers (see diagnostics.md)
@@ -338,10 +338,11 @@ raw_percentile = MAX(percentile) WHERE threshold_value <= value
 
 ### Display Percentile
 
-1. Invert for metrics where lower is better (`pr_drop_rate`, `avg_merge_latency_hours`)
-2. Clamp to `[0.0, 99.9]` (so 100.0 is never returned)
+1. Clamp to `[0.0, 99.9]` (so 100.0 is never returned)
 
-This avoids claiming a "perfect" 100th percentile when percentiles are sampled at 0.1 granularity
+This avoids claiming a "perfect" 100th percentile when percentiles are sampled at 0.1 granularity. Some
+metrics are lower-is-better (`pr_drop_rate`, `avg_merge_latency_hours`), but percentiles are raw ranks
+and clients should use the API's `lower_is_better` flag for presentation
 
 ### Categorical Bins
 
@@ -352,7 +353,7 @@ This avoids claiming a "perfect" 100th percentile when percentiles are sampled a
 | 50–74 | Medium |
 | 75–89 | High |
 | 90–98 | Very High |
-| 99+ | Exceptional |
+| 99+ | Extremely High |
 
 ## Configuration
 
@@ -381,5 +382,3 @@ This avoids claiming a "perfect" 100th percentile when percentiles are sampled a
 | `RUNNING_JOB_STALE_SECONDS` | `3600` | Mark RUNNING jobs stale after this |
 | `GITHUB_LOGIN_RESERVATION_TTL_SECONDS` | `86400` | TTL for unconfirmed login reservations |
 | `POPULATION_BASELINE_ID` | (empty) | Pins baseline selection |
-
-sddsfdsf

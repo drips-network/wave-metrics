@@ -12,7 +12,12 @@ from fastapi import FastAPI, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from services.shared.caching import get_cached_metrics, set_cached_metrics, get_redis
+from services.shared.caching import (
+    get_cached_metrics,
+    get_redis,
+    metrics_cache_key,
+    set_cached_metrics,
+)
 from services.shared import config as shared_config
 from services.shared.config import (
     GITHUB_LOGIN_RESERVATION_TTL_SECONDS,
@@ -25,7 +30,7 @@ from services.shared.config import (
 )
 from services.shared.database import get_session, db_session, apply_pending_migrations
 from services.shared.github_client import fetch_user_login
-from services.shared.metric_definitions import get_metric_description
+from services.shared.metric_definitions import get_metric_description, is_metric_lower_is_better
 from services.shared.percentiles import percentile_bin
 from services.shared.token_store import create_github_token_ref, delete_github_token_ref
 
@@ -119,7 +124,7 @@ def _require_valid_github_login(value: Optional[str]) -> str:
 
 
 def _get_metrics_payload_by_user_id(user_id_str: str, db) -> Dict[str, Any]:
-    cache_key = f"metrics:{user_id_str}"
+    cache_key = metrics_cache_key(user_id_str)
     cached = get_cached_metrics(cache_key)
     if cached:
         return cached
@@ -194,6 +199,7 @@ def _get_metrics_payload_by_user_id(user_id_str: str, db) -> Dict[str, Any]:
             "value": value,
             "percentile": p,
             "bin": percentile_bin(p) if p is not None else None,
+            "lower_is_better": is_metric_lower_is_better(metric_name),
             "description": get_metric_description(metric_name),
         }
 

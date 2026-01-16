@@ -132,9 +132,11 @@ Nine metrics comparing individual contributors against GitHub-wide population:
 | 50–74 | Medium |
 | 75–89 | High |
 | 90–98 | Very High |
-| 99+ | Exceptional |
+| 99+ | Extremely High |
 
 Display percentiles are clamped to a maximum of `99.9`, so `100.0` will never appear.
+Percentiles are the raw percentile rank of the raw value against the population CDF. Some metrics are
+lower-is-better, which is exposed in the API response for client-side interpretation.
 
 **PR Eligibility:** Only PRs with `comment_count ≥ 1 OR review_count ≥ 1` are counted. This filters out self-merges and auto-merged dependency bumps.
 

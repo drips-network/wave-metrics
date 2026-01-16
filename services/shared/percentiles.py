@@ -1,13 +1,12 @@
 """
 Percentile lookup and computation helpers for contributor metrics
 
-Implements spec-conformant percentile lookup, inversion, clamping, and binning
+Implements spec-conformant percentile lookup, clamping, and binning
 """
 
 from sqlalchemy import text
 
 from services.shared.config import POPULATION_BASELINE_ID
-from services.shared.metric_definitions import INVERT_METRICS
 
 
 def resolve_baseline(session):
@@ -130,16 +129,14 @@ def lookup_raw_percentile(session, baseline_id, metric_name, value):
     return float(row[0])
 
 
-def to_display_percentile(metric_name, raw_percentile):
+def to_display_percentile(raw_percentile):
     """
-    Compute display percentile with inversion and clamping per spec
+    Compute display percentile with clamping per spec
 
     Order of operations:
-        1. Invert for metrics where lower is better
-        2. Clamp to [0.0, 99.9]
+        1. Clamp to [0.0, 99.9]
 
     Args:
-        metric_name (str): Metric name
         raw_percentile (float): Raw percentile from lookup, or None
 
     Returns:
@@ -148,8 +145,7 @@ def to_display_percentile(metric_name, raw_percentile):
     if raw_percentile is None:
         return None
 
-    display = 100.0 - raw_percentile if metric_name in INVERT_METRICS else raw_percentile
-    return min(99.9, max(0.0, display))
+    return min(99.9, max(0.0, float(raw_percentile)))
 
 
 def percentile_bin(display_percentile):
@@ -162,7 +158,7 @@ def percentile_bin(display_percentile):
         50–74 -> Medium
         75–89 -> High
         90–98 -> Very High
-        99–100 -> Exceptional (with clamp to 99.9, this is >= 99.0)
+        99–100 -> Extremely High (with clamp to 99.9, this is >= 99.0)
 
     Args:
         display_percentile (float): Display percentile, or None
@@ -183,7 +179,7 @@ def percentile_bin(display_percentile):
         return "High"
     if display_percentile < 99:
         return "Very High"
-    return "Exceptional"
+    return "Extremely High"
 
 
 def compute_oss_composite_raw(p_reviews, p_prs, p_issues):

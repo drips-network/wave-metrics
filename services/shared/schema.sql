@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS contributor_metrics (
     oss_issues_opened INTEGER NOT NULL DEFAULT 0,
     oss_composite_raw NUMERIC(6, 2),
 
-    -- Display percentiles (NULL when gated; already inverted and clamped)
+    -- Display percentiles (NULL when gated; clamped with no direction adjustment)
     total_opened_prs_percentile NUMERIC(4, 1),
     total_merged_prs_percentile NUMERIC(4, 1),
     pr_merge_rate_percentile NUMERIC(4, 1),
